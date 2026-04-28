@@ -148,6 +148,8 @@ Examples already included in the skill tree:
 
 These shared resources support deterministic rebuilds and reporting without forcing every grower or farm to duplicate the same baseline datasets.
 
+Geoadmin payloads are handled a little differently from most small reference files: the committed items under `r2-seed-pipeline/src/shared/geoadmin/` are metadata records plus downloader code, while the generated GeoJSON/Parquet payloads are rebuilt at runtime under `data/my-farm-advisor/shared/geoadmin/{l0_countries,l1_states,l2_counties}/`. See [`docs/GEODATA.md`](docs/GEODATA.md) for the metadata locations, source URL conventions, runtime destinations, and downloader commands.
+
 ## Storage Modes
 
 The same farm data model can run in multiple storage modes.
