@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This folder owns deterministic rebuilds of `data/my-farm-advisor/` from a field-boundary GeoJSON input into the canonical grower, farm, field, and shared data tree.
+This folder owns deterministic rebuild guidance for `${DATA_PIPELINE_DATA_ROOT}/data-pipeline/` from a field-boundary GeoJSON input into the canonical grower, farm, field, and shared data tree.
 
 ## Safe edit scope
 
@@ -10,18 +10,18 @@ Edits should stay in this folder and its children unless the user explicitly ask
 
 ## Read nearby docs first
 
-Read `README.md` first, then `../INDEX.md` and `../../SKILL.md` for routing context. The rebuild entrypoint is `python scripts/rebuild_data_folder.py --boundaries path/to/fields.geojson` from the runtime script tree.
+Read `README.md` first, then `../INDEX.md` and `../../SKILL.md` for routing context. The rebuild entrypoint is the installed runtime script `${DATA_PIPELINE_DATA_ROOT}/data-pipeline/src/scripts/run_farm_pipeline.py`.
 
 ## Local workflow notes
 
-- Required input: `--boundaries` pointing to field-boundary GeoJSON.
-- Optional inputs: `--grower-slug`, `--farm-slug`, `--farm-name`, `--skip-downloads`, and `--keep-legacy-workdirs`.
-- Use `data/my-farm-advisor/scripts/ingest/bootstrap_farm_from_county.py` before rebuilds when a county bootstrap should create or append field boundaries and inventory mappings.
+- Required input: `--boundaries` pointing to field-boundary GeoJSON, usually under `${DATA_PIPELINE_DATA_ROOT}/data-pipeline/input/` or a canonical farm boundary path.
+- Optional inputs: `--grower-slug`, `--farm-slug`, `--farm-name`, `--inventory-csv`, `--weather-csv`, and `--force`.
+- Use `${DATA_PIPELINE_DATA_ROOT}/data-pipeline/src/scripts/ingest/bootstrap_farm_from_county.py` before rebuilds when a county bootstrap should create or append field boundaries and inventory mappings.
 - The rebuild coordinates `field-boundaries`, `ssurgo-soil`, `nasa-power-weather`, `cdl-cropland`, `farm-intelligence-reporting`, and `ssurgo-poster-cards`.
 
 ## Local validation
 
-When runtime scripts are available, run the documented rebuild command against a small boundary fixture. Otherwise run `./scripts/validate.sh` from the repository root after structural changes.
+When runtime scripts are available, run the documented rebuild command or `scripts/run_farm_pipeline.py --structure-test` against a temp runtime root. Otherwise run `./scripts/validate.sh` from the repository root after structural changes.
 
 ## Local-delta-only reminder
 
