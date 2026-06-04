@@ -49,6 +49,7 @@ The skill revolves around grouped example modules plus a unified breeding CLI th
 | --- | --- | --- |
 | Design | Trial layout planning and experimental structure | RCBD, alpha-lattice, or augmented designs |
 | Fieldbook | Plot sheets, labels, imports, and field execution artifacts | crew-ready fieldbook outputs |
+| Field Trial Placement | Field-boundary-aware plot placement | placed trial layouts tied to field geometry |
 | Germplasm | Accession and pedigree handling | organized breeding material records |
 | Selection | Ranking and shortlist generation | candidate line decisions |
 | Cross | Crossing plans and mate pairing | next-cycle crossing scaffold |
@@ -110,6 +111,7 @@ This skill is the operational breeding layer. It is what you use before or along
 ## Start Here
 
 - Main entrypoint: [`SKILL.md`](SKILL.md)
+- Progressive router: [`INDEX.md`](INDEX.md)
 - Unified CLI: `python scripts/breeding_cli.py <design|fieldbook|germplasm|select|cross> --help`
 - Trial design examples: [`examples/design/rcbd-design/`](examples/design/rcbd-design/)
 - Field placement example: [`examples/field-trial-placement/`](examples/field-trial-placement/)

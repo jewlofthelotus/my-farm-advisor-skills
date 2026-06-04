@@ -10,12 +10,12 @@ Edits should stay inside `my-farm-breeding-trial-management/` unless the user ex
 
 ## Start here
 
-Always read `SKILL.md` first for routing, then `README.md` for the overview. Read `PROVENANCE.md` before import, source, or update work. Then open the matching example README, reference README, or script docs.
+Always read `SKILL.md` first for routing, then `README.md` for the overview. Read `PROVENANCE.md` before import, source, or update work. Open `INDEX.md`, then the matching example README, reference README, or script docs.
 
 ## Local routing notes
 
 - Use this skill for breeding operations: trial design, fieldbooks, germplasm, selection, crossing, and field trial placement.
-- Start with `SKILL.md`, then use example groups under `examples/design/`, `examples/fieldbook/`, `examples/germplasm/`, `examples/select/`, `examples/cross/`, and `examples/field-trial-placement/`.
+- Start with `SKILL.md`, then use `INDEX.md` to route into `examples/design/`, `examples/fieldbook/`, `examples/germplasm/`, `examples/select/`, `examples/cross/`, and `examples/field-trial-placement/`.
 - Use `scripts/breeding_cli.py` and `scripts/check_system.py` only when the task involves runnable breeding workflows.
 - Keep operational examples example-first and avoid flattening the grouped workflow layout.
 
