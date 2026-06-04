@@ -18,7 +18,6 @@ FORBIDDEN_PATHS=(
   node_modules
   .cache
   data
-  .sisyphus
 )
 
 FORBIDDEN_TRACKED_ASSETS=(
@@ -302,6 +301,111 @@ PY
   fi
 }
 
+check_markdown_relative_links() {
+  local output
+
+  if (( HAS_GIT == 0 )); then
+    warn 'Skipped markdown relative-link check because git metadata is unavailable'
+    return
+  fi
+
+  if output=$(python3 - "${TRACKED_FILES[@]}" <<'PY'
+import os
+import re
+import sys
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+root = Path('.').resolve()
+tracked_files = sys.argv[1:]
+markdown_files = [Path(path) for path in tracked_files if path.endswith(('.md', '.markdown'))]
+link_pattern = re.compile(r'!?' + r'\[[^\]]*\]' + r'\(([^)]+)\)')
+scheme_pattern = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*:')
+
+
+def clean_target(raw_target):
+    target = raw_target.strip()
+    if not target:
+        return ''
+    if target.startswith('<'):
+        end = target.find('>')
+        if end != -1:
+            target = target[1:end].strip()
+    else:
+        title_match = re.search(r'\s+["\'()]', target)
+        if title_match:
+            target = target[:title_match.start()].strip()
+    return target
+
+
+def should_skip(target):
+    lowered = target.lower()
+    return (
+        not target
+        or target.startswith('#')
+        or target.startswith('//')
+        or lowered.startswith(('http://', 'https://', 'mailto:'))
+        or scheme_pattern.match(target) is not None
+    )
+
+
+def target_path(target):
+    split_target = urlsplit(target)
+    path = unquote(split_target.path)
+    if not path:
+        return None
+    if path.startswith('/'):
+        return root / path.lstrip('/')
+    return Path(path)
+
+
+def strip_fenced_code_blocks(text):
+    return re.sub(r'(?ms)^```.*?^```', '', text)
+
+
+missing = []
+for markdown_file in markdown_files:
+    source = root / markdown_file
+    try:
+        text = source.read_text(encoding='utf-8')
+    except UnicodeDecodeError:
+        continue
+    text = strip_fenced_code_blocks(text)
+
+    for raw_target in link_pattern.findall(text):
+        target = clean_target(raw_target)
+        if should_skip(target):
+            continue
+        parsed_path = target_path(target)
+        if parsed_path is None:
+            continue
+        resolved = parsed_path if parsed_path.is_absolute() else source.parent / parsed_path
+        resolved = resolved.resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            missing.append(f'{markdown_file}: {target} -> outside repository')
+            continue
+        if not resolved.exists():
+            missing.append(f'{markdown_file}: {target} -> {os.path.relpath(resolved, root)}')
+
+if missing:
+    print('\n'.join(missing))
+    raise SystemExit(1)
+PY
+  ); then
+    pass 'Markdown relative links valid'
+  else
+    if [[ -z "${output}" ]]; then
+      fail 'Markdown relative link check failed without output'
+      return
+    fi
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] && fail "Missing markdown relative link target (${line})"
+    done <<<"${output}"
+  fi
+}
+
 printf '== Validation profile: my-farm-advisor-skills ==\n'
 
 require_file 'README.md' 'Root README'
@@ -333,6 +437,8 @@ done
 for asset_name in "${FORBIDDEN_TRACKED_ASSETS[@]}"; do
   check_asset_not_tracked "${asset_name}"
 done
+
+check_markdown_relative_links
 
 check_text_absent 'my-farm-qtl-analysis' 'scientific-skills/qtl-analysis/' 'Stale scientific-skills/qtl-analysis/ reference'
 
