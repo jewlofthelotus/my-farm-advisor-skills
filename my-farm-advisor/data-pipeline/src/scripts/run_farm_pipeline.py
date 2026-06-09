@@ -270,10 +270,10 @@ def main() -> None:
         ("ingest/download_satellite_imagery.py", "Raw satellite TIFFs"),
         ("reporting/generate_ndvi_composites.py", "NDVI yearly composites"),
         ("reporting/generate_ndvi_cards.py", "NDVI cached cards"),
+        ("reporting/generate_ssurgo_maps.py", "SSURGO soil maps with basemap"),
         ("reporting/generate_field_posters.py", "Field posters"),
         ("reporting/generate_aggregate_poster.py", "Farm portfolio poster"),
         ("reporting/generate_ssurgo_cards.py", "SSURGO soil profile cards"),
-        ("reporting/generate_ssurgo_maps.py", "SSURGO soil maps with basemap"),
         ("reporting/generate_farm_html.py", "Self-contained HTML report"),
         ("reporting/generate_farm_markdown.py", "Markdown report"),
     ]

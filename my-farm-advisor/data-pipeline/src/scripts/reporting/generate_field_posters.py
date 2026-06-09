@@ -94,6 +94,31 @@ PROP_MAPS = [
     ("claytotal_r", "Clay (%)"),
 ]
 
+_SSURGO_ATTR_AGG = {
+    "compname": "first",
+    "comppct_r": "first",
+    "drainagecl": "first",
+    "om_r": "mean",
+    "ph1to1h2o_r": "mean",
+    "awc_r": "mean",
+    "claytotal_r": "mean",
+    "sandtotal_r": "mean",
+    "silttotal_r": "mean",
+    "dbthirdbar_r": "mean",
+    "cec7_r": "mean",
+}
+_SSURGO_NUMERIC_ATTRS = [
+    "comppct_r",
+    "om_r",
+    "ph1to1h2o_r",
+    "awc_r",
+    "claytotal_r",
+    "sandtotal_r",
+    "silttotal_r",
+    "dbthirdbar_r",
+    "cec7_r",
+]
+
 _POSTER_TITLE_SIZE = 20
 _CARD_TITLE_SIZE = 13
 _PANEL_TITLE_SIZE = 11.5
@@ -184,6 +209,23 @@ def _cached_soil_map_assets(field_slug: str | None) -> dict[str, Path | None]:
             _DEFAULT_GROWER, _DEFAULT_FARM, field_slug, "soil_cec_map.png"
         ),
     }
+
+
+def _soil_attributes_by_mukey(detail_df: pd.DataFrame) -> pd.DataFrame:
+    if detail_df.empty or "mukey" not in detail_df.columns:
+        return pd.DataFrame()
+    agg_spec = {
+        col: reducer for col, reducer in _SSURGO_ATTR_AGG.items() if col in detail_df.columns
+    }
+    if not agg_spec:
+        return pd.DataFrame()
+    cols = ["mukey", *agg_spec.keys()]
+    soil = detail_df[cols].copy()
+    soil["mukey"] = soil["mukey"].astype(str)
+    for col in _SSURGO_NUMERIC_ATTRS:
+        if col in soil.columns:
+            soil[col] = pd.to_numeric(soil[col], errors="coerce")
+    return pd.DataFrame(soil.groupby("mukey", as_index=False).agg(agg_spec))
 
 
 def _ndvi_panel(ax, image_path: Path | None, title: str) -> None:
@@ -593,11 +635,10 @@ def main() -> None:
             continue
         print(f"run   {field_id}")
         field_gdf = fields.iloc[[idx_num]].copy()
-        detail_df = (
-            soil_full[soil_full["field_id"] == field_id].copy()
-            if "field_id" in soil_full.columns
-            else pd.DataFrame()
-        )
+        if "field_id" in soil_full.columns:
+            detail_df = pd.DataFrame(soil_full.loc[soil_full["field_id"] == field_id].copy())
+        else:
+            detail_df = pd.DataFrame()
 
         # Load SSURGO polygons if available
         ssurgo_gdf = gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
@@ -610,20 +651,17 @@ def main() -> None:
                     and "mukey" in detail_df.columns
                     and "mukey" in ssurgo_gdf.columns
                 ):
-                    soil_agg = (
-                        detail_df.groupby("mukey")
-                        .agg(
-                            {
-                                "compname": "first",
-                                "comppct_r": "first",
-                                "drainagecl": "first",
-                            }
-                        )
-                        .reset_index()
-                    )
-                    soil_agg["mukey"] = soil_agg["mukey"].astype(str)
-                    ssurgo_gdf["mukey"] = ssurgo_gdf["mukey"].astype(str)
-                    ssurgo_gdf = ssurgo_gdf.merge(soil_agg, on="mukey", how="left")
+                    soil_agg = _soil_attributes_by_mukey(detail_df)
+                    if not soil_agg.empty:
+                        ssurgo_gdf["mukey"] = ssurgo_gdf["mukey"].astype(str)
+                        duplicate_attrs = [
+                            col
+                            for col in soil_agg.columns
+                            if col != "mukey" and col in ssurgo_gdf.columns
+                        ]
+                        if duplicate_attrs:
+                            ssurgo_gdf = ssurgo_gdf.drop(columns=duplicate_attrs)
+                        ssurgo_gdf = ssurgo_gdf.merge(soil_agg, on="mukey", how="left")
                 try:
                     ssurgo_gdf = gpd.GeoDataFrame(
                         ssurgo_gdf, geometry="geometry", crs=ssurgo_gdf.crs
