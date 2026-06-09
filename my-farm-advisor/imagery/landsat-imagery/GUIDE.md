@@ -48,7 +48,7 @@ import geopandas as gpd
 
 # Load field boundaries from the field-boundaries skill
 fields = gpd.read_file(
-    '.skills/field-boundaries/examples/sample_2_fields.geojson'
+    'my-farm-advisor/field-management/field-boundaries/examples/real_10_fields_iowa.geojson'
 )
 print(fields[['field_id', 'area_acres', 'crop_name']])
 
@@ -75,7 +75,7 @@ api = API(
 
 # Load field boundaries as AOI
 fields = gpd.read_file(
-    '.skills/field-boundaries/examples/sample_2_fields.geojson'
+    'my-farm-advisor/field-management/field-boundaries/examples/real_10_fields_iowa.geojson'
 )
 bbox = fields.total_bounds  # (minx, miny, maxx, maxy)
 
@@ -102,7 +102,7 @@ This workflow runs in an isolated environment to avoid dependency conflicts:
 
 ```bash
 # Create dedicated environment for this workflow
-cd .skills/landsat-imagery
+cd my-farm-advisor/imagery/landsat-imagery
 uv venv .venv
 source .venv/bin/activate
 
@@ -138,7 +138,7 @@ ee = EarthExplorer(os.environ['USGS_USERNAME'], os.environ['USGS_PASSWORD'])
 
 # --- Load AOI from field-boundaries skill ---
 fields = gpd.read_file(
-    '.skills/field-boundaries/examples/sample_2_fields.geojson'
+    'my-farm-advisor/field-management/field-boundaries/examples/real_10_fields_iowa.geojson'
 )
 bbox = fields.total_bounds  # (minx, miny, maxx, maxy)
 
@@ -157,7 +157,7 @@ if scenes:
     # Sort by cloud cover, pick clearest
     best = sorted(scenes, key=lambda s: s['cloud_cover'])[0]
     print(f"Downloading: {best['display_id']} (cloud: {best['cloud_cover']}%)")
-    ee.download(best['entity_id'], output_dir='data/my-farm-advisor/landsat/')
+    ee.download(best['entity_id'], output_dir='${DATA_PIPELINE_DATA_ROOT}/data-pipeline/imagery/landsat/')
 
 api.logout()
 ee.logout()
@@ -174,11 +174,11 @@ import json
 
 # Load field boundaries
 fields = gpd.read_file(
-    '.skills/field-boundaries/examples/sample_2_fields.geojson'
+    'my-farm-advisor/field-management/field-boundaries/examples/real_10_fields_iowa.geojson'
 )
 
 # Path to a downloaded Landsat band (e.g., B4 Red)
-band_path = 'data/my-farm-advisor/landsat/LC09_L2SP_029029_20240715_20240716_02_T1_SR_B4.TIF'
+band_path = '${DATA_PIPELINE_DATA_ROOT}/data-pipeline/imagery/landsat/LC09_L2SP_029029_20240715_20240716_02_T1_SR_B4.TIF'
 
 for idx, field in fields.iterrows():
     field_id = field['field_id']
@@ -197,7 +197,7 @@ for idx, field in fields.iterrows():
         'compress': 'lzw'
     })
 
-    out_path = Path(f'data/my-farm-advisor/landsat/clipped_{field_id}_B4_EPSG4326.tif')
+    out_path = Path(f'${DATA_PIPELINE_DATA_ROOT}/data-pipeline/imagery/landsat/clipped_{field_id}_B4_EPSG4326.tif')
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     with rasterio.open(out_path, 'w', **out_meta) as dst:
@@ -247,9 +247,9 @@ def calculate_ndvi(red_path: str, nir_path: str, output_path: str) -> str:
 
 # Usage — after clipping B4 and B5 to a field
 ndvi_path = calculate_ndvi(
-    red_path='data/my-farm-advisor/landsat/clipped_271623002471299_B4_EPSG4326.tif',
-    nir_path='data/my-farm-advisor/landsat/clipped_271623002471299_B5_EPSG4326.tif',
-    output_path='data/my-farm-advisor/landsat/clipped_271623002471299_NDVI_EPSG4326.tif'
+    red_path='${DATA_PIPELINE_DATA_ROOT}/data-pipeline/imagery/landsat/clipped_271623002471299_B4_EPSG4326.tif',
+    nir_path='${DATA_PIPELINE_DATA_ROOT}/data-pipeline/imagery/landsat/clipped_271623002471299_B5_EPSG4326.tif',
+    output_path='${DATA_PIPELINE_DATA_ROOT}/data-pipeline/imagery/landsat/clipped_271623002471299_NDVI_EPSG4326.tif'
 )
 ```
 
@@ -348,8 +348,8 @@ def zonal_stats(raster_path: str, fields_path: str) -> pd.DataFrame:
 
 # Usage
 stats = zonal_stats(
-    'data/my-farm-advisor/landsat/clipped_271623002471299_NDVI_EPSG4326.tif',
-    '.skills/field-boundaries/examples/sample_2_fields.geojson'
+    '${DATA_PIPELINE_DATA_ROOT}/data-pipeline/imagery/landsat/clipped_271623002471299_NDVI_EPSG4326.tif',
+    'my-farm-advisor/field-management/field-boundaries/examples/real_10_fields_iowa.geojson'
 )
 print(stats)
 ```
@@ -364,7 +364,7 @@ import os
 api = API(os.environ['USGS_USERNAME'], os.environ['USGS_PASSWORD'])
 
 fields = gpd.read_file(
-    '.skills/field-boundaries/examples/sample_2_fields.geojson'
+    'my-farm-advisor/field-management/field-boundaries/examples/real_10_fields_iowa.geojson'
 )
 bbox = fields.total_bounds
 
