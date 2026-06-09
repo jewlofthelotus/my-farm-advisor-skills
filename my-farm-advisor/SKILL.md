@@ -54,4 +54,4 @@ This umbrella skill contains large supporting assets and examples. The nested fa
 
 ## Data Notes
 
-Some workflows require LFS-backed or runtime-downloaded assets. Keep generated outputs outside the repository and pull any required LFS assets before running data-heavy workflows.
+Some workflows require LFS-backed or runtime-downloaded assets. Keep generated outputs outside the repository and pull any required LFS assets before running data-heavy workflows. The `data-pipeline/` subskill is authoritative for runtime storage: generated farm assets live under `${DATA_PIPELINE_DATA_ROOT}/data-pipeline/growers/...`, shared assets under `${DATA_PIPELINE_DATA_ROOT}/data-pipeline/shared/...`, and pipeline commands run from `${DATA_PIPELINE_DATA_ROOT}/data-pipeline/src` after install.

@@ -139,7 +139,7 @@ The most important high-level orchestration docs are:
 
 The farm tree includes a `shared/` layer for reusable datasets that are not specific to one field or one farm.
 
-Examples already included in the skill tree:
+Committed metadata examples already included in the skill tree:
 
 - geoadmin layers under [`data-pipeline/src/shared/geoadmin/`](data-pipeline/src/shared/geoadmin)
 - corn maturity baselines under [`data-pipeline/src/shared/corn_maturity/`](data-pipeline/src/shared/corn_maturity)
@@ -147,6 +147,8 @@ Examples already included in the skill tree:
 - shared manifest examples under [`data-pipeline/src/shared/manifests/`](data-pipeline/src/shared/manifests)
 
 These shared resources support deterministic rebuilds and reporting without forcing every grower or farm to duplicate the same baseline datasets.
+
+The committed `data-pipeline/src/shared/...` files are metadata, source records, or tiny manifests only. Generated shared payloads are rebuilt under `${DATA_PIPELINE_DATA_ROOT}/data-pipeline/shared/...`; do not treat checkout-local `src/shared` paths as generated data destinations.
 
 Geoadmin payloads are handled a little differently from most small reference files: the committed items under `data-pipeline/src/shared/geoadmin/` are metadata records plus downloader code, while the generated GeoJSON/Parquet payloads are rebuilt at runtime under `${DATA_PIPELINE_DATA_ROOT}/data-pipeline/shared/geoadmin/{l0_countries,l1_states,l2_counties}/`. See [`docs/GEODATA.md`](docs/GEODATA.md) for the metadata locations, source URL conventions, runtime destinations, and downloader commands.
 

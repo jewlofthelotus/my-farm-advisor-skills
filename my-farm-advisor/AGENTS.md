@@ -16,7 +16,8 @@ Always read `SKILL.md` first for routing, then `README.md` for the overview. Rea
 
 - Use this skill for farm advisory routing, farm data rebuilds, field management, imagery, soil, weather, EDA, strategy, and admin map workflows.
 - Route through `INDEX.md` into `admin/`, `data-sources/`, `eda/`, `field-management/`, `imagery/`, `soil/`, `strategy/`, or `weather/`.
-- Treat `data-pipeline/` as deterministic pipeline code and docs. Preserve runtime data root behavior and generated asset exclusions.
+- Treat `data-pipeline/` as the authoritative source for deterministic runtime paths, data-source defaults, generated-output destinations, shared datasets, and pipeline commands. Other subskill guides should reference those conventions instead of inventing alternate `data/` roots.
+- Canonical generated outputs belong under `${DATA_PIPELINE_DATA_ROOT}/data-pipeline`, with farm assets under `growers/<grower>/farms/<farm>/...` and shared assets under `shared/...`.
 - For geoadmin work, preserve committed metadata and downloader scripts, but keep generated payloads out of Git per `../AGENTS.md`.
 
 ## Local validation
