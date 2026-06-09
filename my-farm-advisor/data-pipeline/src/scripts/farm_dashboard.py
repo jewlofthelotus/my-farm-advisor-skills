@@ -32,13 +32,67 @@ from paths import (
     SCRIPTS_ROOT,
     farm_boundary_path,
     farm_manifest_dir,
-    shared_cdl_raster_dir,
+    shared_cdl_conus_raster_path,
+    shared_cdl_state_raster_path,
     shared_geoadmin_counties_dir,
 )
 
 COUNTIES_PATH = shared_geoadmin_counties_dir() / "counties_usa.geojson"
 NON_CONTIGUOUS = {"02", "15", "60", "66", "69", "72", "78"}
 CROP_CODE = {"corn": 1, "soybeans": 5, "wheat": 24, "cotton": 2}
+STATE_FIPS: dict[str, tuple[str, str]] = {
+    "01": ("AL", "Alabama"),
+    "02": ("AK", "Alaska"),
+    "04": ("AZ", "Arizona"),
+    "05": ("AR", "Arkansas"),
+    "06": ("CA", "California"),
+    "08": ("CO", "Colorado"),
+    "09": ("CT", "Connecticut"),
+    "10": ("DE", "Delaware"),
+    "11": ("DC", "District of Columbia"),
+    "12": ("FL", "Florida"),
+    "13": ("GA", "Georgia"),
+    "15": ("HI", "Hawaii"),
+    "16": ("ID", "Idaho"),
+    "17": ("IL", "Illinois"),
+    "18": ("IN", "Indiana"),
+    "19": ("IA", "Iowa"),
+    "20": ("KS", "Kansas"),
+    "21": ("KY", "Kentucky"),
+    "22": ("LA", "Louisiana"),
+    "23": ("ME", "Maine"),
+    "24": ("MD", "Maryland"),
+    "25": ("MA", "Massachusetts"),
+    "26": ("MI", "Michigan"),
+    "27": ("MN", "Minnesota"),
+    "28": ("MS", "Mississippi"),
+    "29": ("MO", "Missouri"),
+    "30": ("MT", "Montana"),
+    "31": ("NE", "Nebraska"),
+    "32": ("NV", "Nevada"),
+    "33": ("NH", "New Hampshire"),
+    "34": ("NJ", "New Jersey"),
+    "35": ("NM", "New Mexico"),
+    "36": ("NY", "New York"),
+    "37": ("NC", "North Carolina"),
+    "38": ("ND", "North Dakota"),
+    "39": ("OH", "Ohio"),
+    "40": ("OK", "Oklahoma"),
+    "41": ("OR", "Oregon"),
+    "42": ("PA", "Pennsylvania"),
+    "44": ("RI", "Rhode Island"),
+    "45": ("SC", "South Carolina"),
+    "46": ("SD", "South Dakota"),
+    "47": ("TN", "Tennessee"),
+    "48": ("TX", "Texas"),
+    "49": ("UT", "Utah"),
+    "50": ("VT", "Vermont"),
+    "51": ("VA", "Virginia"),
+    "53": ("WA", "Washington"),
+    "54": ("WV", "West Virginia"),
+    "55": ("WI", "Wisconsin"),
+    "56": ("WY", "Wyoming"),
+}
 
 
 def _runtime_relative(path: Path) -> str:
@@ -46,6 +100,40 @@ def _runtime_relative(path: Path) -> str:
         return str(path.resolve(strict=False).relative_to(DATA_ROOT))
     except ValueError:
         return str(path)
+
+
+def _slugify(value: str) -> str:
+    return "-".join(value.strip().lower().replace("_", "-").split())
+
+
+def _state_lookup() -> dict[str, dict[str, str]]:
+    lookup: dict[str, dict[str, str]] = {}
+    for fips, (abbr, name) in STATE_FIPS.items():
+        record = {"fips": fips, "abbr": abbr, "name": name, "slug": _slugify(name)}
+        lookup[fips] = record
+        lookup[abbr.lower()] = record
+        lookup[name.lower()] = record
+        lookup[_slugify(name)] = record
+    return lookup
+
+
+def _resolve_state(
+    *, state: str | None, state_fips: str | None, required: bool = False
+) -> dict[str, str] | None:
+    raw = state_fips or state
+    if not raw:
+        if required:
+            raise ValueError("Provide --state or --state-fips")
+        return None
+    key = raw.strip()
+    if key.isdigit():
+        key = key.zfill(2)
+    else:
+        key = _slugify(key)
+    match = _state_lookup().get(key) or _state_lookup().get(raw.strip().lower())
+    if not match:
+        raise ValueError(f"Unknown state selector: {raw}")
+    return match
 
 
 def _run(command: list[str]) -> None:
@@ -72,16 +160,19 @@ def _load_counties() -> gpd.GeoDataFrame:
 
 def _download_cdl_if_missing(year: int, state_fips: str) -> Path:
     state_code = state_fips.zfill(2)
-    out_path = shared_cdl_raster_dir() / f"CDL_{year}_{state_code}.tif"
+    out_path = shared_cdl_state_raster_path(year, state_code)
     if out_path.exists():
         return out_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
     requested_years = list(range(year, 2009, -1))
     last_error: Exception | None = None
     for candidate in requested_years:
-        candidate_path = shared_cdl_raster_dir() / f"CDL_{candidate}_{state_code}.tif"
+        candidate_path = shared_cdl_state_raster_path(candidate, state_code)
         if candidate_path.exists():
             return candidate_path
+        conus_path = shared_cdl_conus_raster_path(candidate)
+        if conus_path.exists():
+            return conus_path
         url = f"https://nassgeodata.gmu.edu/nass_data_cache/byfips/CDL_{candidate}_{state_code}.tif"
         try:
             response = requests.get(url, timeout=180)
@@ -270,6 +361,36 @@ def _run_pipeline_for_farm(
     _run(cmd)
 
 
+def _run_shared_data_initializer(
+    args: argparse.Namespace, *, state_fips: str | None = None
+) -> None:
+    cmd = [
+        sys.executable,
+        str(SCRIPTS_ROOT / "init_shared_data.py"),
+        "--start-year",
+        str(args.shared_start_year),
+        "--end-year",
+        str(args.shared_end_year),
+        "--coverage",
+        args.shared_coverage,
+        "--weather-backend",
+        args.shared_weather_backend,
+        "--weather-time-standard",
+        args.shared_weather_time_standard,
+        "--cdl-scope",
+        args.cdl_scope,
+        "--cdl-latest-year",
+        str(args.cdl_latest_year),
+        "--cdl-window-years",
+        str(args.cdl_window_years),
+    ]
+    if args.cdl_scope == "state" and state_fips:
+        cmd.extend(["--cdl-state-fips", state_fips])
+    if args.force:
+        cmd.append("--force")
+    _run(cmd)
+
+
 def _parse_csv_values(raw: str | None) -> list[str]:
     if not raw:
         return []
@@ -277,11 +398,21 @@ def _parse_csv_values(raw: str | None) -> list[str]:
 
 
 def create_command(args: argparse.Namespace) -> None:
+    state = _resolve_state(
+        state=args.state,
+        state_fips=args.state_fips,
+        required=args.selector == "top-crop-county",
+    )
+    state_fips = state["fips"] if state else None
+    farm_slug = args.farm_slug or f"{args.grower_slug}-{state['slug'] if state else 'farm'}"
+    farm_name = args.farm_name or f"{state['name'] if state else farm_slug.replace('-', ' ').title()} Farm"
+
+    if args.prepare_shared_data:
+        _run_shared_data_initializer(args, state_fips=state_fips)
+
     if args.selector == "top-crop-county":
-        if not args.state_fips:
-            raise ValueError("--state-fips is required for top-crop-county selector")
         top = _top_crop_county_in_state(
-            state_fips=args.state_fips,
+            state_fips=state_fips or "",
             crop=args.crop,
             year=args.cdl_year,
         )
@@ -293,7 +424,7 @@ def create_command(args: argparse.Namespace) -> None:
         counties = _resolve_counties_from_fips(
             fips_level=args.fips_level,
             fips_codes=fips_codes,
-            state_fips=args.state_fips,
+            state_fips=state_fips,
             county_limit=args.county_limit,
         )
 
@@ -302,13 +433,13 @@ def create_command(args: argparse.Namespace) -> None:
         field_count=args.field_count,
         seed=args.seed,
         grower_slug=args.grower_slug,
-        farm_slug=args.farm_slug,
-        farm_name=args.farm_name,
+        farm_slug=farm_slug,
+        farm_name=farm_name,
     )
     _run_pipeline_for_farm(
         grower_slug=args.grower_slug,
-        farm_slug=args.farm_slug,
-        farm_name=args.farm_name,
+        farm_slug=farm_slug,
+        farm_name=farm_name,
         inventory_path=inventory,
         force=args.force,
     )
@@ -321,7 +452,9 @@ def create_command(args: argparse.Namespace) -> None:
                 "counties": counties,
                 "field_count_requested": args.field_count,
                 "grower_slug": args.grower_slug,
-                "farm_slug": args.farm_slug,
+                "farm_slug": farm_slug,
+                "farm_name": farm_name,
+                "state": state,
                 "inventory_csv": _runtime_relative(inventory),
             },
             indent=2,
@@ -412,6 +545,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     create.add_argument("--crop", choices=sorted(CROP_CODE.keys()), default="corn")
     create.add_argument("--cdl-year", type=int, default=2025)
+    create.add_argument(
+        "--state",
+        default=None,
+        help="State name, abbreviation, or FIPS. Example: Illinois, IL, or 17.",
+    )
     create.add_argument("--state-fips", default=None)
     create.add_argument("--fips-level", choices=["l2", "l1", "l0"], default="l2")
     create.add_argument(
@@ -423,8 +561,29 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--field-count", type=int, required=True)
     create.add_argument("--seed", type=int, default=42)
     create.add_argument("--grower-slug", required=True)
-    create.add_argument("--farm-slug", required=True)
-    create.add_argument("--farm-name", required=True)
+    create.add_argument("--farm-slug", default=None)
+    create.add_argument("--farm-name", default=None)
+    create.add_argument(
+        "--prepare-shared-data",
+        action="store_true",
+        help="Initialize shared geoadmin, county weather, maturity, and CDL rasters first",
+    )
+    create.add_argument("--shared-start-year", type=int, default=2021)
+    create.add_argument("--shared-end-year", type=int, default=2025)
+    create.add_argument(
+        "--shared-coverage",
+        choices=["traditional-corn-belt", "lower48"],
+        default="lower48",
+    )
+    create.add_argument(
+        "--shared-weather-backend", choices=["zarr", "api"], default="zarr"
+    )
+    create.add_argument(
+        "--shared-weather-time-standard", choices=["lst", "utc"], default="lst"
+    )
+    create.add_argument("--cdl-scope", choices=["conus", "state"], default="conus")
+    create.add_argument("--cdl-latest-year", type=int, default=2025)
+    create.add_argument("--cdl-window-years", type=int, default=5)
     create.add_argument("--force", action="store_true")
     create.set_defaults(handler=create_command)
 

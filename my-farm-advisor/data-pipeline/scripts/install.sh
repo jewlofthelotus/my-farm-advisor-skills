@@ -7,6 +7,7 @@ NON_INTERACTIVE=0
 FORCE_REFRESH=0
 DRY_RUN=0
 INSTALL_DEPS=1
+PREPARE_SHARED_DATA=0
 PREPARE_SHARED_MATURITY=0
 MATURITY_START_YEAR=2021
 MATURITY_END_YEAR=2025
@@ -14,6 +15,19 @@ MATURITY_COVERAGE="lower48"
 MATURITY_WEATHER_BACKEND="zarr"
 MATURITY_WEATHER_TIME_STANDARD="lst"
 FORCE_SHARED_MATURITY=0
+CDL_SCOPE="conus"
+CDL_STATE_FIPS=""
+CDL_LATEST_YEAR=2025
+CDL_WINDOW_YEARS=5
+SEED_GROWER_SLUG=""
+SEED_FARM_SLUG=""
+SEED_FARM_NAME=""
+SEED_STATE=""
+SEED_FIELD_COUNT=""
+SEED_CROP="corn"
+SEED_RANDOM_SEED=42
+SEED_FORCE=0
+SEED_FARM=0
 
 usage() {
   cat <<'EOF'
@@ -35,6 +49,9 @@ Options:
                              runtime source tree.
   --dry-run                  Print planned actions without mutating files.
   --no-install-deps          Skip virtualenv/dependency installation.
+  --prepare-shared-data      Build shared geoadmin L0/L1/L2, lower48 county
+                             weather, corn RM, soybean MG, and last-five-year
+                             CDL rasters after runtime install.
   --prepare-shared-maturity  Build shared lower48 county weather, corn RM, and
                              soybean MG outputs after runtime install.
   --maturity-start-year <y>  First shared maturity year. Defaults to 2021.
@@ -48,6 +65,20 @@ Options:
                              Shared maturity weather time standard: lst or utc.
                              Defaults to lst.
   --force-shared-maturity    Rebuild maturity outputs even if files exist.
+                             Also applies to --prepare-shared-data.
+  --cdl-scope <mode>         Shared CDL raster scope for --prepare-shared-data:
+                             conus or state. Defaults to conus.
+  --cdl-state-fips <codes>   Comma-separated state FIPS when --cdl-scope state.
+  --cdl-latest-year <y>      Latest CDL candidate year. Defaults to 2025.
+  --cdl-window-years <n>     Number of available CDL years. Defaults to 5.
+  --seed-grower-slug <slug>  Seed a grower/farm after install.
+  --seed-farm-slug <slug>    Optional seeded farm slug. Defaults from grower/state.
+  --seed-farm-name <name>    Optional seeded farm display name.
+  --seed-state <state>       Seed state name, abbreviation, or FIPS.
+  --seed-field-count <n>     Number of OSM fields to seed.
+  --seed-crop <crop>         Top-crop county selector crop. Defaults to corn.
+  --seed-random-seed <n>     Deterministic field sampling seed. Defaults to 42.
+  --seed-force               Force the seeded farm pipeline rerun.
   -h, --help                 Show this help and exit.
 
 Environment:
@@ -146,6 +177,10 @@ while [[ $# -gt 0 ]]; do
       INSTALL_DEPS=0
       shift
       ;;
+    --prepare-shared-data)
+      PREPARE_SHARED_DATA=1
+      shift
+      ;;
     --prepare-shared-maturity)
       PREPARE_SHARED_MATURITY=1
       shift
@@ -188,6 +223,79 @@ while [[ $# -gt 0 ]]; do
       FORCE_SHARED_MATURITY=1
       shift
       ;;
+    --cdl-scope)
+      [[ $# -ge 2 ]] || die "--cdl-scope requires conus or state"
+      case "$2" in
+        conus|state) CDL_SCOPE="$2" ;;
+        *) die "--cdl-scope must be conus or state" ;;
+      esac
+      shift 2
+      ;;
+    --cdl-state-fips)
+      [[ $# -ge 2 ]] || die "--cdl-state-fips requires comma-separated state FIPS values"
+      CDL_STATE_FIPS="$2"
+      shift 2
+      ;;
+    --cdl-latest-year)
+      [[ $# -ge 2 ]] || die "--cdl-latest-year requires a year"
+      CDL_LATEST_YEAR="$2"
+      shift 2
+      ;;
+    --cdl-window-years)
+      [[ $# -ge 2 ]] || die "--cdl-window-years requires a positive integer"
+      CDL_WINDOW_YEARS="$2"
+      shift 2
+      ;;
+    --seed-grower-slug)
+      [[ $# -ge 2 ]] || die "--seed-grower-slug requires a slug"
+      SEED_GROWER_SLUG="$2"
+      SEED_FARM=1
+      shift 2
+      ;;
+    --seed-farm-slug)
+      [[ $# -ge 2 ]] || die "--seed-farm-slug requires a slug"
+      SEED_FARM_SLUG="$2"
+      SEED_FARM=1
+      shift 2
+      ;;
+    --seed-farm-name)
+      [[ $# -ge 2 ]] || die "--seed-farm-name requires a name"
+      SEED_FARM_NAME="$2"
+      SEED_FARM=1
+      shift 2
+      ;;
+    --seed-state)
+      [[ $# -ge 2 ]] || die "--seed-state requires a state name, abbreviation, or FIPS"
+      SEED_STATE="$2"
+      SEED_FARM=1
+      shift 2
+      ;;
+    --seed-field-count)
+      [[ $# -ge 2 ]] || die "--seed-field-count requires a positive integer"
+      SEED_FIELD_COUNT="$2"
+      SEED_FARM=1
+      shift 2
+      ;;
+    --seed-crop)
+      [[ $# -ge 2 ]] || die "--seed-crop requires corn, soybeans, wheat, or cotton"
+      case "$2" in
+        corn|soybeans|wheat|cotton) SEED_CROP="$2" ;;
+        *) die "--seed-crop must be corn, soybeans, wheat, or cotton" ;;
+      esac
+      SEED_FARM=1
+      shift 2
+      ;;
+    --seed-random-seed)
+      [[ $# -ge 2 ]] || die "--seed-random-seed requires an integer"
+      SEED_RANDOM_SEED="$2"
+      SEED_FARM=1
+      shift 2
+      ;;
+    --seed-force)
+      SEED_FORCE=1
+      SEED_FARM=1
+      shift
+      ;;
     *)
       die "unknown option: $1 (run with --help)"
       ;;
@@ -196,8 +304,20 @@ done
 
 [[ "${MATURITY_START_YEAR}" =~ ^[0-9]{4}$ ]] || die "--maturity-start-year must be a four-digit year"
 [[ "${MATURITY_END_YEAR}" =~ ^[0-9]{4}$ ]] || die "--maturity-end-year must be a four-digit year"
+[[ "${CDL_LATEST_YEAR}" =~ ^[0-9]{4}$ ]] || die "--cdl-latest-year must be a four-digit year"
+[[ "${CDL_WINDOW_YEARS}" =~ ^[0-9]+$ ]] || die "--cdl-window-years must be a positive integer"
+(( CDL_WINDOW_YEARS > 0 )) || die "--cdl-window-years must be positive"
 if (( MATURITY_START_YEAR > MATURITY_END_YEAR )); then
   die "--maturity-start-year must be <= --maturity-end-year"
+fi
+if [[ "${SEED_FARM}" -eq 1 ]]; then
+  [[ -n "${SEED_GROWER_SLUG}" ]] || die "--seed-grower-slug is required when seeding a farm"
+  [[ -n "${SEED_STATE}" ]] || die "--seed-state is required when seeding a farm"
+  [[ -n "${SEED_FIELD_COUNT}" ]] || die "--seed-field-count is required when seeding a farm"
+  [[ "${SEED_FIELD_COUNT}" =~ ^[0-9]+$ ]] || die "--seed-field-count must be a positive integer"
+  (( SEED_FIELD_COUNT > 0 )) || die "--seed-field-count must be positive"
+  [[ "${SEED_RANDOM_SEED}" =~ ^[0-9]+$ ]] || die "--seed-random-seed must be a non-negative integer"
+  PREPARE_SHARED_DATA=1
 fi
 
 if [[ "${NON_INTERACTIVE}" -eq 0 && -t 0 && -z "${CI:-}" ]]; then
@@ -504,8 +624,48 @@ install_dependencies() {
   fi
 }
 
+prepare_shared_data() {
+  if [[ "${PREPARE_SHARED_DATA}" -eq 0 ]]; then
+    return 0
+  fi
+
+  local shared_script="${RUNTIME_SRC}/scripts/init_shared_data.py"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log "Dry run: would prepare shared data with ${shared_script} for ${MATURITY_START_YEAR}-${MATURITY_END_YEAR}, CDL ${CDL_SCOPE} last ${CDL_WINDOW_YEARS} years"
+    return 0
+  fi
+
+  [[ -x "${RUNTIME_VENV}/bin/python" ]] || die "runtime Python is required for --prepare-shared-data: ${RUNTIME_VENV}/bin/python"
+  [[ -f "${shared_script}" ]] || die "shared data script missing: ${shared_script}"
+
+  local command=(
+    "${RUNTIME_VENV}/bin/python"
+    "${shared_script}"
+    --start-year "${MATURITY_START_YEAR}"
+    --end-year "${MATURITY_END_YEAR}"
+    --coverage "${MATURITY_COVERAGE}"
+    --weather-backend "${MATURITY_WEATHER_BACKEND}"
+    --weather-time-standard "${MATURITY_WEATHER_TIME_STANDARD}"
+    --cdl-scope "${CDL_SCOPE}"
+    --cdl-latest-year "${CDL_LATEST_YEAR}"
+    --cdl-window-years "${CDL_WINDOW_YEARS}"
+  )
+  if [[ -n "${CDL_STATE_FIPS}" ]]; then
+    command+=(--cdl-state-fips "${CDL_STATE_FIPS}")
+  fi
+  if [[ "${FORCE_SHARED_MATURITY}" -eq 1 ]]; then
+    command+=(--force)
+  fi
+
+  log "Preparing shared data for ${MATURITY_START_YEAR}-${MATURITY_END_YEAR} (${MATURITY_COVERAGE}, ${MATURITY_WEATHER_BACKEND}, CDL ${CDL_SCOPE})"
+  DATA_PIPELINE_DATA_ROOT="${RESOLVED_ROOT}" DATA_PIPELINE_VENV_DIR="${RUNTIME_VENV}" "${command[@]}"
+}
+
 prepare_shared_maturity() {
   if [[ "${PREPARE_SHARED_MATURITY}" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "${PREPARE_SHARED_DATA}" -eq 1 ]]; then
     return 0
   fi
 
@@ -535,6 +695,45 @@ prepare_shared_maturity() {
   DATA_PIPELINE_DATA_ROOT="${RESOLVED_ROOT}" DATA_PIPELINE_VENV_DIR="${RUNTIME_VENV}" "${command[@]}"
 }
 
+seed_farm_dashboard() {
+  if [[ "${SEED_FARM}" -eq 0 ]]; then
+    return 0
+  fi
+
+  local dashboard_script="${RUNTIME_SRC}/scripts/farm_dashboard.py"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log "Dry run: would seed ${SEED_FIELD_COUNT} fields for ${SEED_GROWER_SLUG} in ${SEED_STATE} with ${dashboard_script}"
+    return 0
+  fi
+
+  [[ -x "${RUNTIME_VENV}/bin/python" ]] || die "runtime Python is required for farm seeding: ${RUNTIME_VENV}/bin/python"
+  [[ -f "${dashboard_script}" ]] || die "farm dashboard script missing: ${dashboard_script}"
+
+  local command=(
+    "${RUNTIME_VENV}/bin/python"
+    "${dashboard_script}"
+    create
+    --state "${SEED_STATE}"
+    --field-count "${SEED_FIELD_COUNT}"
+    --seed "${SEED_RANDOM_SEED}"
+    --grower-slug "${SEED_GROWER_SLUG}"
+    --crop "${SEED_CROP}"
+    --cdl-year "${CDL_LATEST_YEAR}"
+  )
+  if [[ -n "${SEED_FARM_SLUG}" ]]; then
+    command+=(--farm-slug "${SEED_FARM_SLUG}")
+  fi
+  if [[ -n "${SEED_FARM_NAME}" ]]; then
+    command+=(--farm-name "${SEED_FARM_NAME}")
+  fi
+  if [[ "${SEED_FORCE}" -eq 1 ]]; then
+    command+=(--force)
+  fi
+
+  log "Seeding ${SEED_FIELD_COUNT} fields for ${SEED_GROWER_SLUG} in ${SEED_STATE}"
+  DATA_PIPELINE_DATA_ROOT="${RESOLVED_ROOT}" DATA_PIPELINE_VENV_DIR="${RUNTIME_VENV}" "${command[@]}"
+}
+
 case "${PERSIST_MODE}" in
   user) persist_user_env ;;
   none) log "Skipping user-level persistence because --persist none was passed" ;;
@@ -544,6 +743,8 @@ esac
 with_runtime_lock
 write_source_locator
 install_dependencies
+prepare_shared_data
 prepare_shared_maturity
+seed_farm_dashboard
 
 log "Install complete. Runtime base: ${RUNTIME_BASE}"
