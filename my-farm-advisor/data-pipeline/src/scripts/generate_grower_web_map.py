@@ -106,13 +106,25 @@ var fieldData = {geojson_str};
 var fieldList = {field_json};
 var map = L.map('map').setView([{center_lat}, {center_lon}], 10);
 
-L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+var satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+    maxZoom: 19
+}});
+
+var osm = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     maxZoom: 19
+}});
+
+satellite.addTo(map);
+
+L.control.layers({{
+    'Satellite': satellite,
+    'OpenStreetMap': osm
 }}).addTo(map);
 
 var geoLayer = L.geoJSON(fieldData, {{
-    style: {{ color: '#1b5e20', weight: 2, fillColor: '#a5d6a7', fillOpacity: 0.35 }},
+    style: {{ color: '#ffeb3b', weight: 2, fillColor: '#ffeb3b', fillOpacity: 0.15 }},
     onEachFeature: function(feature, layer) {{
         var p = feature.properties;
         var popupHtml = '<b>Field:</b> ' + p.field_id + '<br>' +
