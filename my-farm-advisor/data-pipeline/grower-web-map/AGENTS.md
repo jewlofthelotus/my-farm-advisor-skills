@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This subskill owns the grower-level interactive web map generator. It reads pipeline field-boundary GeoJSON files and produces a self-contained Leaflet HTML map for each grower.
+This subskill owns the grower-level interactive web map generator. It reads pipeline field-boundary GeoJSON files and produces a self-contained Leaflet HTML map for each grower with optional SSURGO soil and NDVI overlay layers.
 
 ## Safe edit scope
 
