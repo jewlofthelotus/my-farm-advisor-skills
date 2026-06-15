@@ -2,10 +2,15 @@
 """Generate a grower-level interactive Leaflet web map from pipeline field boundaries."""
 
 import argparse
+import csv
 import json
 import os
+import re
 import sys
 from pathlib import Path
+
+import numpy as np
+import rasterio
 
 
 def find_grower_dirs(data_root):
@@ -29,6 +34,103 @@ def load_field_boundaries(farm_dir):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _slugify(value: str) -> str:
+    normalized = value.strip().lower().replace("_", "-")
+    normalized = re.sub(r"[^a-z0-9]+", "-", normalized)
+    return normalized.strip("-")
+
+
+def _load_ssurgo_csv_lookup(farm_dir, field_slug):
+    csv_path = farm_dir / "fields" / field_slug / "soil" / "ssurgo_full.csv"
+    if not csv_path.is_file():
+        return {}
+    lookup = {}
+    with open(csv_path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            mukey = row.get("mukey", "").strip()
+            if not mukey:
+                continue
+            lookup[mukey] = row
+    return lookup
+
+
+_SSURGO_CSV_PROPS = [
+    "compname", "comppct_r", "drainagecl",
+    "om_r", "ph1to1h2o_r", "awc_r", "claytotal_r",
+    "sandtotal_r", "silttotal_r", "dbthirdbar_r", "cec7_r",
+]
+
+
+def load_ssurgo_features(grower_dir, field_data_by_farm):
+    features = []
+    for farm_slug, data in field_data_by_farm.items():
+        farm_dir = grower_dir / "farms" / farm_slug
+        for feature in data.get("features", []):
+            props = feature.get("properties", {})
+            field_slug = props.get("field_slug") or _slugify(props.get("field_id", ""))
+            if not field_slug:
+                continue
+            soil_path = (
+                farm_dir / "fields" / field_slug / "soil" / "ssurgo_soil_types.geojson"
+            )
+            if not soil_path.is_file():
+                continue
+            try:
+                soil_gj = json.loads(soil_path.read_text(encoding="utf-8"))
+                if not soil_gj.get("features"):
+                    continue
+                csv_lookup = _load_ssurgo_csv_lookup(farm_dir, field_slug)
+                for sf in soil_gj.get("features", []):
+                    sprops = sf.setdefault("properties", {})
+                    sprops["field_id"] = props.get("field_id", "")
+                    sprops["farm"] = farm_slug
+                    if csv_lookup:
+                        mukey = str(sprops.get("mukey", "")).strip()
+                        csv_row = csv_lookup.get(mukey)
+                        if csv_row:
+                            for k in _SSURGO_CSV_PROPS:
+                                v = csv_row.get(k)
+                                if v is not None and v != "":
+                                    try:
+                                        sprops[k] = float(v)
+                                    except (ValueError, TypeError):
+                                        sprops[k] = v
+                    features.append(sf)
+            except (json.JSONDecodeError, OSError):
+                continue
+    return {"type": "FeatureCollection", "features": features}
+
+
+def compute_field_ndvi(grower_dir, field_data_by_farm):
+    ndvi_values = {}
+    for farm_slug, data in field_data_by_farm.items():
+        farm_dir = grower_dir / "farms" / farm_slug
+        for feature in data.get("features", []):
+            props = feature.get("properties", {})
+            field_slug = props.get("field_slug") or _slugify(props.get("field_id", ""))
+            if not field_slug:
+                continue
+            field_id = props.get("field_id", "")
+            features_dir = farm_dir / "fields" / field_slug / "derived" / "features"
+            if not features_dir.is_dir():
+                continue
+            ndvi_tifs = sorted(features_dir.glob("ndvi_year_*_composite.tif"))
+            if not ndvi_tifs:
+                continue
+            latest = ndvi_tifs[-1]
+            try:
+                with rasterio.open(latest) as src:
+                    arr = src.read(1)
+                    mask = src.read_masks(1)
+                    valid = (mask > 0) & np.isfinite(arr)
+                    if valid.any():
+                        ndvi_values[field_id] = float(np.mean(arr[valid]))
+            except Exception:
+                continue
+    return ndvi_values
+
+
 def compute_center(features):
     lats, lons = [], []
     for f in features:
@@ -43,7 +145,7 @@ def compute_center(features):
     return (min(lats) + max(lats)) / 2.0, (min(lons) + max(lons)) / 2.0
 
 
-def generate_web_map(grower_slug, field_data_by_farm, output_path):
+def generate_web_map(grower_slug, field_data_by_farm, output_path, ssurgo_fc=None, ndvi_values=None):
     all_features = []
     field_list_items = []
 
@@ -69,6 +171,9 @@ def generate_web_map(grower_slug, field_data_by_farm, output_path):
     geojson_str = json.dumps(fc)
     field_json = json.dumps(field_list_items)
 
+    ssurgo_str = json.dumps(ssurgo_fc) if ssurgo_fc and ssurgo_fc.get("features") else "null"
+    ndvi_str = json.dumps(ndvi_values) if ndvi_values else "{}"
+
     center_lat, center_lon = compute_center(all_features)
 
     html = f'''<!DOCTYPE html>
@@ -91,6 +196,8 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans
 #sidebar .field-item .meta {{ color: #666; font-size: 0.9em; }}
 #map {{ flex: 1; }}
 .leaflet-popup-content {{ font-size: 0.9em; line-height: 1.4; }}
+.info.legend {{ background: white; padding: 8px 12px; border-radius: 4px; box-shadow: 0 1px 5px rgba(0,0,0,0.4); font-size: 13px; line-height: 1.6; }}
+.info.legend i {{ width: 14px; height: 14px; display: inline-block; margin-right: 4px; border: 1px solid #555; vertical-align: middle; }}
 </style>
 </head>
 <body>
@@ -104,6 +211,9 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans
 <script>
 var fieldData = {geojson_str};
 var fieldList = {field_json};
+var ssurgoData = {ssurgo_str};
+var ndviValues = {ndvi_str};
+
 var map = L.map('map').setView([{center_lat}, {center_lon}], 10);
 
 var satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
@@ -118,13 +228,22 @@ var osm = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.pn
 
 satellite.addTo(map);
 
-L.control.layers({{
+var baseLayers = {{
     'Satellite': satellite,
     'OpenStreetMap': osm
-}}).addTo(map);
+}};
+
+var fieldStyles = {{
+    satellite: {{ color: '#ffeb3b', weight: 2, fillColor: '#ffeb3b', fillOpacity: 0.15 }},
+    osm: {{ color: '#1b5e20', weight: 2, fillColor: '#a5d6a7', fillOpacity: 0.35 }}
+}};
+
+function getFieldStyle() {{
+    return fieldStyles.satellite;
+}}
 
 var geoLayer = L.geoJSON(fieldData, {{
-    style: {{ color: '#ffeb3b', weight: 2, fillColor: '#ffeb3b', fillOpacity: 0.15 }},
+    style: getFieldStyle,
     onEachFeature: function(feature, layer) {{
         var p = feature.properties;
         var popupHtml = '<b>Field:</b> ' + p.field_id + '<br>' +
@@ -138,6 +257,135 @@ var geoLayer = L.geoJSON(fieldData, {{
     }}
 }}).addTo(map);
 
+map.on('baselayerchange', function(e) {{
+    var key = e.name === 'OpenStreetMap' ? 'osm' : 'satellite';
+    geoLayer.eachLayer(function(layer) {{
+        layer.setStyle(fieldStyles[key]);
+    }});
+}});
+
+// --- SSURGO soil overlay ---
+var ssurgoLayer = null;
+var ssurgoColorMap = {{}};
+var ssurgoPalette = ['#a6cee3','#1f78b4','#b2df8a','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00','#cab2d6','#6a3d9a','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
+var ssurgoIdx = 0;
+
+function ssurgoColor(name) {{
+    if (!ssurgoColorMap[name]) {{
+        ssurgoColorMap[name] = ssurgoPalette[ssurgoIdx % ssurgoPalette.length];
+        ssurgoIdx++;
+    }}
+    return ssurgoColorMap[name];
+}}
+
+if (ssurgoData && ssurgoData.features && ssurgoData.features.length > 0) {{
+    ssurgoLayer = L.geoJSON(ssurgoData, {{
+        style: function(feature) {{
+            return {{
+                fillColor: ssurgoColor(feature.properties.compname || 'Unknown'),
+                fillOpacity: 0.6,
+                color: '#555',
+                weight: 1
+            }};
+        }},
+        onEachFeature: function(feature, layer) {{
+            var p = feature.properties;
+            var popupHtml = '<b>Field:</b> ' + (p.field_id || '') + '<br>' +
+                '<b>Soil Component:</b> ' + (p.compname || '—') + '<br>' +
+                '<b>Drainage:</b> ' + (p.drainagecl || '—') + '<br>' +
+                '<b>OM:</b> ' + (p.om_r !== undefined && p.om_r !== null ? Number(p.om_r).toFixed(1) + '%' : '—') + '<br>' +
+                '<b>pH:</b> ' + (p.ph1to1h2o_r !== undefined && p.ph1to1h2o_r !== null ? Number(p.ph1to1h2o_r).toFixed(1) : '—');
+            layer.bindPopup(popupHtml);
+        }}
+    }});
+}}
+
+// --- NDVI overlay ---
+var ndviLayer = null;
+
+function ndviColor(value) {{
+    var v = Math.max(0, Math.min(1, value));
+    var colors = [
+        [165, 0, 38], [215, 48, 39], [244, 109, 67], [253, 174, 97],
+        [254, 224, 139], [255, 255, 191], [217, 239, 139], [166, 217, 106],
+        [102, 189, 99], [26, 152, 80], [0, 104, 55]
+    ];
+    var idx = v * (colors.length - 1);
+    var lo = Math.min(Math.floor(idx), colors.length - 2);
+    var hi = lo + 1;
+    var t = idx - lo;
+    var c = colors[lo].map(function(x, i) {{ return Math.round(x + (colors[hi][i] - x) * t); }});
+    return 'rgb(' + c.join(',') + ')';
+}}
+
+if (Object.keys(ndviValues).length > 0) {{
+    ndviLayer = L.geoJSON(fieldData, {{
+        style: function(feature) {{
+            var ndvi = ndviValues[feature.properties.field_id];
+            if (ndvi === undefined) {{
+                return {{ fillOpacity: 0, color: '#999', weight: 1, dashArray: '3 3' }};
+            }}
+            return {{
+                fillColor: ndviColor(ndvi),
+                fillOpacity: 0.7,
+                color: 'transparent',
+                weight: 0
+            }};
+        }},
+        onEachFeature: function(feature, layer) {{
+            var p = feature.properties;
+            var ndvi = ndviValues[p.field_id];
+            var popupHtml = '<b>Field:</b> ' + p.field_id + '<br>' +
+                '<b>Mean NDVI:</b> ' + (ndvi !== undefined ? ndvi.toFixed(3) : 'N/A');
+            layer.bindPopup(popupHtml);
+        }}
+    }});
+}}
+
+// --- Layer controls ---
+var overlays = {{}};
+if (ssurgoLayer) {{ overlays['SSURGO Soil Units'] = ssurgoLayer; }}
+if (ndviLayer) {{ overlays['NDVI (mean)'] = ndviLayer; }}
+L.control.layers(baseLayers, overlays).addTo(map);
+
+// --- Dynamic legend ---
+var legendDiv;
+var legendCtrl = L.control({{position: 'bottomright'}});
+legendCtrl.onAdd = function() {{
+    legendDiv = L.DomUtil.create('div', 'info legend');
+    return legendDiv;
+}};
+legendCtrl.addTo(map);
+
+function updateLegend() {{
+    if (!legendDiv) return;
+    var html;
+    if (ssurgoLayer && map.hasLayer(ssurgoLayer)) {{
+        var comps = {{}};
+        ssurgoData.features.forEach(function(f) {{
+            var name = (f.properties && f.properties.compname) || 'Unknown';
+            comps[name] = ssurgoColor(name);
+        }});
+        html = '<b>SSURGO Soil Component</b><br>';
+        for (var name in comps) {{
+            html += '<i style="background:' + comps[name] + '"></i> ' + name + '<br>';
+        }}
+    }} else if (ndviLayer && map.hasLayer(ndviLayer)) {{
+        html = '<b>Mean NDVI</b><br>';
+        var steps = 6;
+        for (var i = 0; i < steps; i++) {{
+            var v = i / (steps - 1);
+            html += '<i style="background:' + ndviColor(v) + '"></i> ' + v.toFixed(1) + '<br>';
+        }}
+    }} else {{
+        html = '<b>Field Boundaries</b><br><span style="font-size:11px;color:#888;">enable overlays above</span>';
+    }}
+    legendDiv.innerHTML = html;
+}}
+updateLegend();
+map.on('overlayadd overlayremove', updateLegend);
+
+// --- Sidebar field list ---
 var listEl = document.getElementById('field-list');
 fieldList.forEach(function(item, idx) {{
     var div = document.createElement('div');
@@ -175,6 +423,16 @@ def main():
     parser.add_argument(
         "--output-dir",
         help="Custom output directory. Defaults to <grower-dir>/web-map/.",
+    )
+    parser.add_argument(
+        "--no-ssurgo",
+        action="store_true",
+        help="Skip SSURGO soil overlay even if data exists.",
+    )
+    parser.add_argument(
+        "--no-ndvi",
+        action="store_true",
+        help="Skip NDVI overlay even if data exists.",
     )
     args = parser.parse_args()
 
@@ -216,7 +474,21 @@ def main():
             out_dir = grower_dir / "web-map"
 
         out_path = out_dir / "grower_map.html"
-        generate_web_map(slug, field_data, out_path)
+
+        ssurgo_fc = None
+        ndvi_values = None
+
+        if not args.no_ssurgo:
+            ssurgo_fc = load_ssurgo_features(grower_dir, field_data)
+            if ssurgo_fc.get("features"):
+                print(f"  {slug}: {len(ssurgo_fc['features'])} SSURGO polygons loaded")
+
+        if not args.no_ndvi:
+            ndvi_values = compute_field_ndvi(grower_dir, field_data)
+            if ndvi_values:
+                print(f"  {slug}: NDVI mean computed for {len(ndvi_values)} fields")
+
+        generate_web_map(slug, field_data, out_path, ssurgo_fc=ssurgo_fc, ndvi_values=ndvi_values)
         field_count = sum(len(d["features"]) for d in field_data.values())
         print(f"  {slug}: {field_count} fields → {out_path}")
 
