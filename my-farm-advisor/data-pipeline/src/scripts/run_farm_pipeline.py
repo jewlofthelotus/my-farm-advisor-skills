@@ -202,6 +202,18 @@ def main() -> None:
         default=os.environ.get("AG_WEATHER_TIME_STANDARD", "lst"),
         help="NASA POWER time standard for farm weather outputs",
     )
+    parser.add_argument(
+        "--imagery-start-year",
+        type=int,
+        default=_env_int("AG_IMAGERY_START_YEAR", 2021),
+        help="First satellite imagery year",
+    )
+    parser.add_argument(
+        "--imagery-end-year",
+        type=int,
+        default=_env_int("AG_IMAGERY_END_YEAR", 2026),
+        help="Last satellite imagery year",
+    )
     parser.add_argument("--force", action="store_true", help="Force rerun all steps")
     parser.add_argument(
         "--structure-test",
@@ -289,6 +301,8 @@ def main() -> None:
         "AG_WEATHER_START_YEAR": str(args.weather_start_year),
         "AG_WEATHER_END_YEAR": str(args.weather_end_year),
         "AG_WEATHER_TIME_STANDARD": args.weather_time_standard,
+        "AG_IMAGERY_START_YEAR": str(args.imagery_start_year),
+        "AG_IMAGERY_END_YEAR": str(args.imagery_end_year),
     }
     if args.weather_csv:
         extra_env["AG_WEATHER_CSV"] = str(_runtime_path(args.weather_csv))
