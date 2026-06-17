@@ -26,6 +26,8 @@ SEED_STATE=""
 SEED_FIELD_COUNT=""
 SEED_CROP="corn"
 SEED_RANDOM_SEED=42
+SEED_IMAGERY_START_YEAR=2021
+SEED_IMAGERY_END_YEAR=2026
 SEED_FORCE=0
 SEED_FARM=0
 
@@ -77,8 +79,10 @@ Options:
   --seed-state <state>       Seed state name, abbreviation, or FIPS.
   --seed-field-count <n>     Number of OSM fields to seed.
   --seed-crop <crop>         Top-crop county selector crop. Defaults to corn.
-  --seed-random-seed <n>     Deterministic field sampling seed. Defaults to 42.
-  --seed-force               Force the seeded farm pipeline rerun.
+   --seed-random-seed <n>     Deterministic field sampling seed. Defaults to 42.
+   --seed-imagery-start-year <y>  First satellite imagery year. Defaults to 2021.
+   --seed-imagery-end-year <y>    Last satellite imagery year. Defaults to 2026.
+   --seed-force               Force the seeded farm pipeline rerun.
   -h, --help                 Show this help and exit.
 
 Environment:
@@ -289,6 +293,16 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "--seed-random-seed requires an integer"
       SEED_RANDOM_SEED="$2"
       SEED_FARM=1
+      shift 2
+      ;;
+    --seed-imagery-start-year)
+      [[ $# -ge 2 ]] || die "--seed-imagery-start-year requires a four-digit year"
+      SEED_IMAGERY_START_YEAR="$2"
+      shift 2
+      ;;
+    --seed-imagery-end-year)
+      [[ $# -ge 2 ]] || die "--seed-imagery-end-year requires a four-digit year"
+      SEED_IMAGERY_END_YEAR="$2"
       shift 2
       ;;
     --seed-force)
@@ -726,6 +740,8 @@ seed_farm_dashboard() {
   if [[ -n "${SEED_FARM_NAME}" ]]; then
     command+=(--farm-name "${SEED_FARM_NAME}")
   fi
+  command+=(--imagery-start-year "${SEED_IMAGERY_START_YEAR}")
+  command+=(--imagery-end-year "${SEED_IMAGERY_END_YEAR}")
   if [[ "${SEED_FORCE}" -eq 1 ]]; then
     command+=(--force)
   fi

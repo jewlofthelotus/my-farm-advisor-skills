@@ -482,6 +482,20 @@ def _download_sensor_archive(
     _write_json(manifest_path, manifest)
 
 
+def _resolve_imagery_years(config: FieldReportingConfig) -> tuple[int, ...]:
+    start_raw = os.environ.get("AG_IMAGERY_START_YEAR")
+    end_raw = os.environ.get("AG_IMAGERY_END_YEAR")
+    if start_raw is not None and end_raw is not None:
+        try:
+            start = int(start_raw)
+            end = int(end_raw)
+            if start <= end:
+                return tuple(range(start, end + 1))
+        except ValueError:
+            pass
+    return config.imagery_years
+
+
 def main() -> None:
     print("=" * 60)
     print("Satellite imagery download - raw TIFFs first")
@@ -492,6 +506,12 @@ def main() -> None:
         farm_name=_DEFAULT_FARM_NAME,
         field_boundary_path=str(farm_boundary_path(_DEFAULT_GROWER, _DEFAULT_FARM)),
     )
+    imagery_years = _resolve_imagery_years(config)
+    if imagery_years != config.imagery_years:
+        print(f"Imagery years: {imagery_years[0]}-{imagery_years[-1]} (from env)")
+    else:
+        print(f"Imagery years: {imagery_years[0]}-{imagery_years[-1]} (from config)")
+
     field_slugs = _field_slug_lookup()
     fields = gpd.read_file(_REPO / config.field_boundary_path).to_crs("EPSG:4326")
 
@@ -508,7 +528,7 @@ def main() -> None:
             field_geom=field.geometry,
             grower_slug=_DEFAULT_GROWER,
             farm_slug=_DEFAULT_FARM,
-            years=config.imagery_years,
+            years=imagery_years,
             sensor="sentinel",
             collection=SENTINEL_COLLECTION,
             cloud_cover_max=config.sentinel_cloud_cover_max,
@@ -521,7 +541,7 @@ def main() -> None:
             field_geom=field.geometry,
             grower_slug=_DEFAULT_GROWER,
             farm_slug=_DEFAULT_FARM,
-            years=config.imagery_years,
+            years=imagery_years,
             sensor="landsat",
             collection=LANDSAT_COLLECTION,
             cloud_cover_max=config.landsat_cloud_cover_max,

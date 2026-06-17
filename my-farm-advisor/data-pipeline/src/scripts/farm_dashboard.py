@@ -341,6 +341,8 @@ def _run_pipeline_for_farm(
     farm_name: str,
     inventory_path: Path,
     force: bool,
+    imagery_start_year: int = 2021,
+    imagery_end_year: int = 2026,
 ) -> None:
     cmd = [
         sys.executable,
@@ -355,6 +357,10 @@ def _run_pipeline_for_farm(
         farm_name,
         "--inventory-csv",
         str(inventory_path),
+        "--imagery-start-year",
+        str(imagery_start_year),
+        "--imagery-end-year",
+        str(imagery_end_year),
     ]
     if force:
         cmd.append("--force")
@@ -442,6 +448,8 @@ def create_command(args: argparse.Namespace) -> None:
         farm_name=farm_name,
         inventory_path=inventory,
         force=args.force,
+        imagery_start_year=args.imagery_start_year,
+        imagery_end_year=args.imagery_end_year,
     )
 
     print(
@@ -584,6 +592,8 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--cdl-scope", choices=["conus", "state"], default="conus")
     create.add_argument("--cdl-latest-year", type=int, default=2025)
     create.add_argument("--cdl-window-years", type=int, default=5)
+    create.add_argument("--imagery-start-year", type=int, default=2021)
+    create.add_argument("--imagery-end-year", type=int, default=2026)
     create.add_argument("--force", action="store_true")
     create.set_defaults(handler=create_command)
 
