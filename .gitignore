@@ -26,3 +26,6 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+
+# opencode config
+.opencode/
