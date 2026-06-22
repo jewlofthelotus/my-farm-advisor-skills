@@ -22,6 +22,7 @@ Use this nested skill for field-scale elevation and terrain work in My Farm Advi
 - Read [INDEX.md](INDEX.md) for file-level navigation inside this package.
 - Open [`src/dem_terrain/terrain_contract.py`](src/dem_terrain/terrain_contract.py) for product names, path templates, and manifest fields.
 - Open [`src/dem_terrain/source_resolver.py`](src/dem_terrain/source_resolver.py) for adapter ids, candidate records, ranking policy, and fallback warnings.
+- Use [`src/dem_terrain/package_validation.py`](src/dem_terrain/package_validation.py) to validate runtime DEM package invariants from a temp or external runtime manifest.
 - Use the runtime CLI at `data-pipeline/src/scripts/ingest/download_dem_terrain.py` from the installed data-pipeline source copy when a farm needs actual DEM terrain products.
 - Read [PROVENANCE.md](PROVENANCE.md) before adding or changing elevation sources.
 

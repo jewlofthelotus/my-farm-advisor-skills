@@ -158,6 +158,12 @@ from .terrain_contract import (
     build_output_product_index,
 )
 
+from .package_validation import (
+    DEFAULT_NODATA_RATIO_THRESHOLD,
+    PackageValidationResult,
+    validate_dem_terrain_package,
+)
+
 __all__ = [
     "ADAPTER_ALOS_AW3D30",
     "ADAPTER_CLASSES",
@@ -185,6 +191,7 @@ __all__ = [
     "DATA_PIPELINE_DATA_ROOT_ENV",
     "DEFAULT_ILLINOIS_ILHMP_CATALOG",
     "DEFAULT_MAX_DEFAULT_DOWNLOAD_SIZE_MB",
+    "DEFAULT_NODATA_RATIO_THRESHOLD",
     "DERIVED_RASTER_FILENAMES",
     "DERIVED_RASTER_PRODUCT_NAMES",
     "DERIVED_TERRAIN_DIR_TEMPLATE",
@@ -256,6 +263,7 @@ __all__ = [
     "CopernicusGLO30Adapter",
     "ManifestField",
     "OutputAssetSchemaField",
+    "PackageValidationResult",
     "ProductDefinition",
     "RuntimePathTemplates",
     "RasterOutputRecord",
@@ -295,5 +303,6 @@ __all__ = [
     "transform_buffered_bounds_to_source_crs",
     "utm_crs_for_lonlat",
     "vertical_datum_warning",
+    "validate_dem_terrain_package",
     "write_raster_atomic",
 ]

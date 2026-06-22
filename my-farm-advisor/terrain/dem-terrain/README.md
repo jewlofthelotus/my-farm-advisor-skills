@@ -117,6 +117,17 @@ The manifest must include these top-level fields exactly:
 
 The `outputs` records should be STAC-like where useful. Each asset should include an `href`, media `type`, `roles`, projection metadata such as `proj:epsg` or `proj:wkt2`, raster metadata such as nodata, data type, unit, and resolution, file size and checksum, and source/provenance links. DSM or mixed-surface fallbacks must set warning fields so farm-terrain analysis is not misrepresented as bare-earth DTM when vegetation or structures may affect elevations.
 
+## Package invariant validation
+
+`src/dem_terrain/package_validation.py` validates an existing runtime `dem_terrain_manifest.json` without provider access. It checks the manifest against the required fields in `terrain_contract.py`, confirms all contract products and summaries are listed and present, inspects GeoTIFF CRS/nodata ratios when `rasterio` is available, verifies `dem_clipped.tif` covers the field boundary plus the manifest buffer when `boundary/field_boundary.geojson` is available, checks DSM warning and fallback-reason consistency, and guards against tracked generated DEM assets.
+
+Run it against a temp or external runtime package, not against committed generated outputs:
+
+```bash
+python my-farm-advisor/terrain/dem-terrain/src/dem_terrain/package_validation.py \
+  /absolute/runtime/root/data-pipeline/growers/<grower>/farms/<farm>/fields/<field>/manifests/dem_terrain_manifest.json
+```
+
 ## Source resolver policy
 
 `dem_terrain.source_resolver` defines stdlib-only adapter interfaces, source candidate records, provenance records, ranking configuration, and deterministic selection helpers. The placeholder adapter classes are safe to instantiate without credentials or network access. They expose responsibilities equivalent to `discover(aoi)`, `rank(candidates)`, `download(candidate, cache)`, `prepare(candidate)`, and `provenance(candidate)`, but real provider discovery, download, and raster preparation are reserved for later adapter tasks.

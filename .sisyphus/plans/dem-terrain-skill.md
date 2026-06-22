@@ -548,7 +548,7 @@ PY` exits `0` after created files exist.
 
   **Commit**: YES | Message: `docs(pipeline): document DEM terrain runtime` | Files: [`my-farm-advisor/data-pipeline/**`, `my-farm-advisor/terrain/dem-terrain/**`]
 
-- [ ] 12. Add validation, smoke fixtures, and invariant checks
+- [x] 12. Add validation, smoke fixtures, and invariant checks
 
   **What to do**: Add small text/JSON/mock fixtures only (no large rasters unless tiny synthetic and safely under asset policy). Add a DEM validation helper script or documented Python one-liners that check: expected file count, CRS projected, bounds cover buffered AOI, nodata ratio threshold, manifest fields, DSM warning, fallback reason, and no tracked generated assets. Use synthetic tiny raster generation in temp directories for offline tests.
   **Must NOT do**: Do not introduce pytest unless explicitly scoped; do not commit generated outputs.

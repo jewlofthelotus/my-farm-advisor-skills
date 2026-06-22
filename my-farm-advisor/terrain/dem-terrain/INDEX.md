@@ -12,6 +12,7 @@ Use this package for field-level DEM source policy, terrain product contracts, p
 
 - [`src/dem_terrain/terrain_contract.py`](src/dem_terrain/terrain_contract.py) - import-safe constants for runtime paths, product filenames, summary filenames, and manifest fields.
 - [`src/dem_terrain/source_resolver.py`](src/dem_terrain/source_resolver.py) - import-safe source candidate records, adapter placeholders, ranking policy, DSM warnings, and coarse-resolution warnings.
+- [`src/dem_terrain/package_validation.py`](src/dem_terrain/package_validation.py) - offline runtime package invariant checker for manifests, expected products, raster CRS/nodata/coverage, DSM warnings, fallback reasons, and tracked generated asset guardrails.
 - [`src/dem_terrain/__init__.py`](src/dem_terrain/__init__.py) - package exports for contract and resolver consumers.
 
 ## Future Integration Points
