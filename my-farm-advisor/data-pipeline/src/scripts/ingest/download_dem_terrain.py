@@ -36,7 +36,9 @@ from paths import (  # pyright: ignore[reportMissingImports]
     field_dem_manifest_path,
     field_tables_dir,
     field_terrain_derived_dir,
+    ensure_data_root_path,
     shared_dem_cache_path,
+    validate_path_slug,
 )
 from reporting_bootstrap import (  # pyright: ignore[reportMissingImports]
     ensure_skill_path,
@@ -166,6 +168,18 @@ def main() -> int:
         return CONTROLLED_FAILURE
     if args.limit_fields is not None and args.limit_fields < 1:
         print("ERROR: --limit-fields must be >= 1", file=sys.stderr)
+        return CONTROLLED_FAILURE
+    try:
+        args.grower = validate_path_slug(args.grower, "grower_slug")
+        args.farm = validate_path_slug(args.farm, "farm_slug")
+    except ValueError as exc:
+        _print_controlled_error(
+            ControlledFieldError(
+                "unsafe_slug",
+                str(exc),
+                details={"grower_slug": args.grower, "farm_slug": args.farm},
+            )
+        )
         return CONTROLLED_FAILURE
 
     inventory_path = (
@@ -340,10 +354,22 @@ def _load_field_plan(
 
     planned: list[dict[str, Any]] = []
     for field_id, field_slug in field_slug_map.items():
+        try:
+            safe_field_slug = validate_path_slug(str(field_slug), "field_slug")
+        except ValueError as exc:
+            raise ControlledFieldError(
+                "unsafe_field_slug",
+                str(exc),
+                details={
+                    "inventory_path": str(inventory_path),
+                    "field_id": str(field_id),
+                    "field_slug": str(field_slug),
+                },
+            ) from exc
         row: dict[str, Any] = {
             "field_id": str(field_id),
-            "field_slug": str(field_slug),
-            "boundary_path": field_boundary_path(grower_slug, farm_slug, str(field_slug)),
+            "field_slug": safe_field_slug,
+            "boundary_path": field_boundary_path(grower_slug, farm_slug, safe_field_slug),
         }
         if fields_gdf is not None and "field_id" in fields_gdf.columns:
             match = fields_gdf[fields_gdf["field_id"].astype(str) == str(field_id)]
@@ -501,7 +527,7 @@ def _prepare_source_rasters(
     args: argparse.Namespace,
 ) -> list[Path]:
     selected = selection.selected
-    cache_dir = shared_dem_cache_path(selected.adapter_id) / field["field_slug"]
+    cache_dir = ensure_data_root_path(shared_dem_cache_path(selected.adapter_id) / field["field_slug"])
     if args.offline_fixtures:
         return [_write_offline_fixture_dem(cache_dir / "offline_fixture_dem.tif", geometry)]
 
@@ -555,6 +581,7 @@ def _local_path_from_source_url(source_url: str) -> Path | None:
 
 
 def _write_offline_fixture_dem(path: Path, geometry: Any) -> Path:
+    path = ensure_data_root_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         return path
@@ -612,19 +639,22 @@ def _expected_paths(grower_slug: str, farm_slug: str, field_slug: str) -> dict[s
     dem_dir = field_dem_dir(grower_slug, farm_slug, field_slug)
     derived_dir = field_terrain_derived_dir(grower_slug, farm_slug, field_slug)
     tables_dir = field_tables_dir(grower_slug, farm_slug, field_slug)
-    preview_dir = derived_dir / "previews"
+    preview_dir = ensure_data_root_path(derived_dir / "previews")
     return {
         "manifest": field_dem_manifest_path(grower_slug, farm_slug, field_slug),
         "dem_dir": dem_dir,
         "derived_dir": derived_dir,
         "tables_dir": tables_dir,
         "preview_dir": preview_dir,
-        "source_reference": dem_dir / SOURCE_REFERENCE_FILENAME,
-        "dem_clipped": dem_dir / CLIPPED_DEM_FILENAME,
-        "dem_conditioned": derived_dir / CONDITIONED_DEM_FILENAME,
-        "summary_json": tables_dir / SUMMARY_JSON_FILENAME,
-        "summary_csv": tables_dir / SUMMARY_CSV_FILENAME,
-        **{filename.removesuffix(".tif"): derived_dir / filename for filename in DERIVED_RASTER_FILENAMES},
+        "source_reference": ensure_data_root_path(dem_dir / SOURCE_REFERENCE_FILENAME),
+        "dem_clipped": ensure_data_root_path(dem_dir / CLIPPED_DEM_FILENAME),
+        "dem_conditioned": ensure_data_root_path(derived_dir / CONDITIONED_DEM_FILENAME),
+        "summary_json": ensure_data_root_path(tables_dir / SUMMARY_JSON_FILENAME),
+        "summary_csv": ensure_data_root_path(tables_dir / SUMMARY_CSV_FILENAME),
+        **{
+            filename.removesuffix(".tif"): ensure_data_root_path(derived_dir / filename)
+            for filename in DERIVED_RASTER_FILENAMES
+        },
     }
 
 
@@ -890,7 +920,7 @@ def _write_failure_manifest(field: dict[str, Any], args: argparse.Namespace, exc
 
 
 def _append_farm_summary(grower_slug: str, farm_slug: str, row: dict[str, Any]) -> None:
-    path = farm_dem_summary_table_path(grower_slug, farm_slug)
+    path = ensure_data_root_path(farm_dem_summary_table_path(grower_slug, farm_slug))
     rows: list[dict[str, Any]] = []
     if path.exists():
         with path.open("r", newline="", encoding="utf-8") as handle:
@@ -925,6 +955,7 @@ def _farm_summary_row(field: dict[str, Any], outputs: dict[str, Path], *, status
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path = ensure_data_root_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_jsonable(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
