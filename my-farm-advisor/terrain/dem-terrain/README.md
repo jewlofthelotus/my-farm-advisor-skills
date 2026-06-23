@@ -21,7 +21,9 @@ The contract module exposes these as string templates only. Importing `dem_terra
 
 ## Runtime CLI
 
-The data-pipeline runtime exposes DEM terrain ingestion at `scripts/ingest/download_dem_terrain.py` after `my-farm-advisor/data-pipeline/scripts/install.sh` copies the source tree into `${DATA_PIPELINE_DATA_ROOT}/data-pipeline/src`. Run it from the runtime source copy, not from the skill checkout.
+Normal farm pipeline initialization and add-field runs that invoke `scripts/run_farm_pipeline.py` include real DEM terrain by default. The data-pipeline runner calls `scripts/ingest/download_dem_terrain.py` immediately after field boundary download, passes live real-source permission through `--allow-live-downloads`, and writes runtime field terrain products before later soil, weather, CDL, satellite, and reporting steps. Use `--skip-dem-terrain` only as an explicit operator override when a run must omit DEM terrain. The `scripts/run_farm_pipeline.py --structure-test` path remains no-DEM and no-download.
+
+The direct DEM CLI remains available for focused dry runs, package inspection, or operator-led terrain retries after `my-farm-advisor/data-pipeline/scripts/install.sh` copies the source tree into `${DATA_PIPELINE_DATA_ROOT}/data-pipeline/src`. Run it from the runtime source copy, not from the skill checkout. Generated farm and field reports do not integrate terrain metrics in this change.
 
 Temp-root install plus no-download dry run. This creates the runtime venv before invoking `.venv/bin/python`:
 
@@ -39,10 +41,15 @@ cd "${DATA_PIPELINE_DATA_ROOT}/data-pipeline/src"
   --dry-run
 ```
 
-Dry-run is the safe default planning path: no raster writes, no DEM downloads, and no live provider services. For a no-network full-package smoke, use `--offline-fixtures` so the command creates tiny synthetic source DEM inputs inside the external runtime cache:
+Direct CLI dry-run is the safe planning path for focused checks: no raster writes, no DEM downloads, and no live provider services. Offline fixtures are a direct CLI test-only synthetic path. They are not grower validation, not real grower DEM evidence, and must not be cited in farm decisions. Synthetic fixture mode is unreachable from default farm-pipeline orchestration because `run_farm_pipeline.py` does not expose fixture flags. The CLI refuses `--offline-fixtures` unless the test operator also passes the deliberately named `--allow-synthetic-fixtures` override; fixture manifests and source references are marked with `synthetic_fixture=true`, `synthetic://...` source URLs, and warnings that the package is not real grower DEM evidence.
+
+For a no-network full-package smoke in a temporary or otherwise disposable runtime root, use:
 
 ```bash
-export DATA_PIPELINE_DATA_ROOT=/absolute/path/to/my-farm-advisor-runtime
+tmp_root="$(mktemp -d)"
+export DATA_PIPELINE_DATA_ROOT="$tmp_root"
+cd my-farm-advisor/data-pipeline
+./scripts/install.sh --non-interactive --force-refresh
 cd "${DATA_PIPELINE_DATA_ROOT}/data-pipeline/src"
 "${DATA_PIPELINE_DATA_ROOT}/data-pipeline/.venv/bin/python" \
   scripts/ingest/download_dem_terrain.py \
@@ -50,16 +57,17 @@ cd "${DATA_PIPELINE_DATA_ROOT}/data-pipeline/src"
   --farm dekalb-demo-farm \
   --context-meters 20 \
   --offline-fixtures \
+  --allow-synthetic-fixtures \
   --limit-fields 1
 ```
 
-Live provider discovery or downloads require explicit operator opt-in with `--allow-live-downloads`. Without that flag, runtime mode fails safely when no cached source raster is available. Any farm-pipeline orchestration must keep DEM behind an explicit switch such as `--include-dem-terrain` and pass `AG_CONTEXT_METERS=20` or the matching `--context-meters 20` value to the CLI.
+Real grower verification must use cached real source DEM rasters or explicit live provider access. Default farm orchestration already supplies live real-source permission after field boundaries. Focused direct CLI runs still require `--allow-live-downloads`; without that flag, direct runtime mode fails safely when no cached source raster is available. Use `--dem-context-meters` and `--dem-source-policy` on `run_farm_pipeline.py` to tune the default path, or `--skip-dem-terrain` when the operator explicitly chooses to omit DEM terrain for a run.
 
 ## Raster clipping primitives
 
 `src/dem_terrain/raster_processing.py` provides the v1 local raster primitive for already-available DEM tiles. It selects a projected analysis CRS from the field centroid, buffers the field in meters after projection, transforms the buffered bounds to source CRS for tile reads, mosaics source tiles in source CRS, reprojects once to the analysis CRS, and writes a compressed/tiled GeoTIFF through an atomic temporary file. High-latitude fields outside the UTM valid range use explicit polar stereographic fallbacks with warnings rather than silent CRS guessing.
 
-Synthetic validation evidence for this primitive is stored as text/JSON summaries only under `.sisyphus/evidence/`; temporary GeoTIFF fixtures are written under `/tmp` and should not be committed.
+Synthetic validation evidence for this primitive is stored as text/JSON summaries only under `.sisyphus/evidence/`; temporary GeoTIFF fixtures are written under `/tmp` or another disposable test root and should not be committed. Synthetic fixtures are test artifacts only and are never real grower DEM evidence.
 
 ## Source hierarchy
 

@@ -86,6 +86,10 @@ from dem_terrain.usgs_tnm import USGSTNMAdapter  # pyright: ignore[reportMissing
 
 CONTROLLED_FAILURE = 2
 DEFAULT_CONTEXT_METERS = 20.0
+MAX_REAL_CLIPPED_NODATA_RATIO = 0.75
+SYNTHETIC_FIXTURE_WARNING = (
+    "SYNTHETIC DEM FIXTURE ONLY - not real grower DEM evidence and not valid for agronomic decisions"
+)
 SOURCE_POLICIES = (
     "auto",
     "us",
@@ -156,7 +160,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--offline-fixtures",
         action="store_true",
-        help="Generate tiny synthetic DEM fixtures in the runtime cache instead of using live providers",
+        help=(
+            "TEST ONLY: generate tiny synthetic DEM fixtures instead of using cached or live real DEM providers"
+        ),
+    )
+    parser.add_argument(
+        "--allow-synthetic-fixtures",
+        action="store_true",
+        help=(
+            "TEST ONLY: explicitly allow --offline-fixtures to write synthetic, non-evidence DEM outputs"
+        ),
     )
     return parser.parse_args()
 
@@ -178,6 +191,27 @@ def main() -> int:
                 "unsafe_slug",
                 str(exc),
                 details={"grower_slug": args.grower, "farm_slug": args.farm},
+            )
+        )
+        return CONTROLLED_FAILURE
+
+    if args.offline_fixtures and not args.allow_synthetic_fixtures:
+        _print_controlled_error(
+            ControlledFieldError(
+                "synthetic_fixture_override_required",
+                (
+                    "--offline-fixtures creates synthetic DEM test packages only. "
+                    "Add --allow-synthetic-fixtures for test runs, or use cached real DEMs / "
+                    "--allow-live-downloads for grower evidence."
+                ),
+                details={
+                    "data_root": str(DATA_ROOT),
+                    "grower_slug": args.grower,
+                    "farm_slug": args.farm,
+                    "offline_fixtures": True,
+                    "allow_synthetic_fixtures": False,
+                    "warning": SYNTHETIC_FIXTURE_WARNING,
+                },
             )
         )
         return CONTROLLED_FAILURE
@@ -270,9 +304,21 @@ def _process_field(field: dict[str, Any], args: argparse.Namespace) -> dict[str,
         )
 
     outputs = _expected_paths(args.grower, args.farm, field_slug)
-    if _manifest_reusable(outputs["manifest"], outputs) and not args.force and not args.dry_run:
+    if (
+        _manifest_reusable(
+            outputs["manifest"],
+            outputs,
+            allow_synthetic=bool(args.offline_fixtures and args.allow_synthetic_fixtures),
+        )
+        and not args.force
+        and not args.dry_run
+    ):
         print(f"skip  {field_slug} DEM terrain (manifest+outputs reusable)")
-        _append_farm_summary(args.grower, args.farm, _farm_summary_row(field, outputs, status="skipped"))
+        _append_farm_summary(
+            args.grower,
+            args.farm,
+            _farm_summary_row(field, outputs, status="skipped", synthetic_fixture=bool(args.offline_fixtures)),
+        )
         return {"status": "skipped", "field_slug": field_slug, "manifest": str(outputs["manifest"])}
 
     aoi = _source_aoi(boundary)
@@ -290,33 +336,17 @@ def _process_field(field: dict[str, Any], args: argparse.Namespace) -> dict[str,
         print(json.dumps(plan, indent=2, sort_keys=True))
         return {"status": "planned", "field_slug": field_slug}
 
-    source_paths = _prepare_source_rasters(
+    trial = _prepare_valid_dem_trial(
         selection=selection,
         geometry=geometry,
         field=field,
+        outputs=outputs,
         args=args,
     )
-    _write_source_reference(outputs["source_reference"], selection, source_paths=source_paths)
-
-    clipped_record = clip_dem_tiles_to_buffer(
-        source_paths,
-        geometry,
-        outputs["dem_clipped"],
-        field_crs="EPSG:4326",
-        buffer_meters=args.context_meters,
-        nodata=DEFAULT_NODATA,
-        source_vertical_datum="unknown",
-        target_vertical_datum="unknown",
-    )
-    derivative_result = derive_terrain_products(
-        outputs["dem_clipped"],
-        outputs["derived_dir"],
-        preview_dir=outputs["preview_dir"],
-        tables_dir=outputs["tables_dir"],
-        summary_json_path=outputs["summary_json"],
-        summary_csv_path=outputs["summary_csv"],
-        write_previews=True,
-    )
+    selection = trial["selection"]
+    source_paths = trial["source_paths"]
+    clipped_record = trial["clipped_record"]
+    derivative_result = trial["derivative_result"]
     manifest = _build_success_manifest(
         field=field,
         args=args,
@@ -326,9 +356,14 @@ def _process_field(field: dict[str, Any], args: argparse.Namespace) -> dict[str,
         outputs=outputs,
         source_paths=source_paths,
         analysis_crs=clipped_record.analysis_crs,
+        source_selection_attempts=trial["attempts"],
     )
     _write_json(outputs["manifest"], manifest)
-    _append_farm_summary(args.grower, args.farm, _farm_summary_row(field, outputs, status="complete"))
+    _append_farm_summary(
+        args.grower,
+        args.farm,
+        _farm_summary_row(field, outputs, status="complete", synthetic_fixture=bool(args.offline_fixtures)),
+    )
     print(f"run   {field_slug} DEM terrain complete: {outputs['manifest']}")
     return {"status": "complete", "field_slug": field_slug, "manifest": str(outputs["manifest"])}
 
@@ -400,19 +435,31 @@ def _select_source(
             adapter_id="offline_fixtures",
             adapter_name="Offline synthetic DEM fixture",
             source_name="Tiny synthetic DEM fixture generated in runtime cache",
-            source_urls=("runtime-cache://offline-fixtures/synthetic-dem.tif",),
+            source_urls=("synthetic://offline-fixtures/synthetic-dem.tif",),
             metadata_urls=(),
-            license="synthetic fixture; generated by My Farm Advisor smoke test",
-            citation="Synthetic DEM generated locally for offline validation; not an operational elevation source.",
+            license=(
+                "synthetic fixture; generated by My Farm Advisor test smoke; not real DEM evidence"
+            ),
+            citation=(
+                "Synthetic DEM generated locally for offline validation only; "
+                "not an operational elevation source and not grower evidence."
+            ),
             region_policy=REGION_POLICY_UNKNOWN,
             resolution_m=1.0,
             surface_type=SURFACE_DEM,
             coverage_score=1.0,
             direct_no_auth=True,
             requires_auth=False,
-            warnings=("offline_fixture_mode=true",),
+            warnings=(
+                "synthetic_fixture=true",
+                "offline_fixture_mode=true",
+                "test_only=true",
+                "not_real_dem_evidence=true",
+                SYNTHETIC_FIXTURE_WARNING,
+            ),
             fallback_reason="offline_fixture_mode",
             bbox_wgs84=aoi.bbox_wgs84,
+            access_note=SYNTHETIC_FIXTURE_WARNING,
         )
         return select_best_candidate((fixture,), aoi=aoi, policy=SourceRankingPolicy())
 
@@ -527,6 +574,12 @@ def _prepare_source_rasters(
     args: argparse.Namespace,
 ) -> list[Path]:
     selected = selection.selected
+    if not args.offline_fixtures and _candidate_has_non_evidence_urls(selected):
+        raise ControlledFieldError(
+            "non_evidence_source_blocked",
+            "Synthetic, planned, or offline-fixture DEM source references are blocked for real DEM runs.",
+            details={"selected_source": selected.to_dict(), "source_urls": list(selected.source_urls)},
+        )
     cache_dir = ensure_data_root_path(shared_dem_cache_path(selected.adapter_id) / field["field_slug"])
     if args.offline_fixtures:
         return [_write_offline_fixture_dem(cache_dir / "offline_fixture_dem.tif", geometry)]
@@ -538,7 +591,11 @@ def _prepare_source_rasters(
     if not args.allow_live_downloads:
         raise ControlledFieldError(
             "live_downloads_not_allowed",
-            "DEM source is not cached and live downloads are disabled. Pass --allow-live-downloads or --offline-fixtures.",
+            (
+                "DEM source is not cached and live downloads are disabled. "
+                "Pass --allow-live-downloads for real DEM evidence, or use "
+                "--offline-fixtures with --allow-synthetic-fixtures for synthetic tests only."
+            ),
             details={"selected_source": selected.to_dict(), "cache_dir": str(cache_dir)},
         )
 
@@ -551,6 +608,196 @@ def _prepare_source_rasters(
         f"Selected DEM provider does not yet implement safe live downloads: {selected.adapter_id}",
         details={"selected_source": selected.to_dict(), "cache_dir": str(cache_dir)},
     )
+
+
+def _prepare_valid_dem_trial(
+    *,
+    selection: SourceSelection,
+    geometry: Any,
+    field: dict[str, Any],
+    outputs: dict[str, Path],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    attempts: list[dict[str, Any]] = []
+    for candidate in _candidate_retry_order(selection):
+        candidate_selection = _selection_for_candidate(selection, candidate)
+        attempt_base = _candidate_attempt_base(candidate)
+        _cleanup_dem_outputs(outputs)
+        try:
+            source_paths = _prepare_source_rasters(
+                selection=candidate_selection,
+                geometry=geometry,
+                field=field,
+                args=args,
+            )
+            clipped_record = clip_dem_tiles_to_buffer(
+                source_paths,
+                geometry,
+                outputs["dem_clipped"],
+                field_crs="EPSG:4326",
+                buffer_meters=args.context_meters,
+                nodata=DEFAULT_NODATA,
+                source_vertical_datum="unknown",
+                target_vertical_datum="unknown",
+            )
+            coverage = _validate_clipped_dem_coverage(
+                outputs["dem_clipped"],
+                max_nodata_ratio=None if args.offline_fixtures else MAX_REAL_CLIPPED_NODATA_RATIO,
+            )
+        except ControlledFieldError as exc:
+            attempts.append({**attempt_base, "status": "failed", "reason": exc.reason, "message": str(exc), "details": exc.details})
+            _cleanup_dem_outputs(outputs)
+            continue
+        except Exception as exc:
+            attempts.append(
+                {
+                    **attempt_base,
+                    "status": "failed",
+                    "reason": "candidate_processing_failed",
+                    "message": f"{exc.__class__.__name__}: {exc}",
+                }
+            )
+            _cleanup_dem_outputs(outputs)
+            continue
+
+        _write_source_reference(outputs["source_reference"], candidate_selection, source_paths=source_paths)
+        derivative_result = derive_terrain_products(
+            outputs["dem_clipped"],
+            outputs["derived_dir"],
+            preview_dir=outputs["preview_dir"],
+            tables_dir=outputs["tables_dir"],
+            summary_json_path=outputs["summary_json"],
+            summary_csv_path=outputs["summary_csv"],
+            write_previews=True,
+        )
+        attempts.append({**attempt_base, "status": "accepted", "coverage": coverage})
+        return {
+            "selection": candidate_selection,
+            "source_paths": source_paths,
+            "clipped_record": clipped_record,
+            "derivative_result": derivative_result,
+            "attempts": attempts,
+        }
+
+    _cleanup_dem_outputs(outputs)
+    raise ControlledFieldError(
+        "no_candidate_valid_field_coverage",
+        "No ranked DEM source candidate produced valid clipped DEM coverage for the field.",
+        details={
+            "field_id": field["field_id"],
+            "field_slug": field["field_slug"],
+            "source_policy": args.source_policy,
+            "candidate_attempts": attempts,
+            "no_candidate_produced_valid_field_coverage": True,
+            "max_real_clipped_nodata_ratio": MAX_REAL_CLIPPED_NODATA_RATIO,
+        },
+    )
+
+
+def _candidate_retry_order(selection: SourceSelection) -> tuple[SourceCandidate, ...]:
+    ordered: list[SourceCandidate] = []
+    seen: set[tuple[str, str | None, tuple[str, ...]]] = set()
+    for candidate in (selection.selected, *selection.ranked_candidates):
+        if candidate.coverage_score <= 0.0:
+            continue
+        key = (candidate.adapter_id, candidate.source_id, tuple(candidate.source_urls))
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(candidate)
+    return tuple(ordered)
+
+
+def _selection_for_candidate(selection: SourceSelection, candidate: SourceCandidate) -> SourceSelection:
+    single = select_best_candidate((candidate,), policy=SourceRankingPolicy())
+    return SourceSelection(
+        selected=single.selected,
+        ranked_candidates=selection.ranked_candidates,
+        quality_warning=single.quality_warning,
+        warnings=single.warnings,
+    )
+
+
+def _candidate_attempt_base(candidate: SourceCandidate) -> dict[str, Any]:
+    return {
+        "adapter_id": candidate.adapter_id,
+        "source_id": candidate.source_id,
+        "source_name": candidate.source_name,
+        "source_urls": list(candidate.source_urls),
+        "resolution_m": candidate.resolution_m,
+        "coverage_score": candidate.coverage_score,
+    }
+
+
+def _candidate_has_non_evidence_urls(candidate: SourceCandidate) -> bool:
+    blocked_prefixes = ("synthetic://", "planned://", "runtime-cache://offline-fixtures/")
+    return any(str(url).startswith(blocked_prefixes) for url in candidate.source_urls)
+
+
+def _validate_clipped_dem_coverage(path: Path, *, max_nodata_ratio: float | None) -> dict[str, Any]:
+    coverage = _inspect_clipped_dem(path)
+    if coverage["valid_pixel_count"] <= 0:
+        raise ControlledFieldError(
+            "invalid_clipped_dem_coverage",
+            "Clipped DEM has no valid elevation pixels inside the field buffer.",
+            details={"dem_clipped": str(path), "coverage": coverage},
+        )
+    if max_nodata_ratio is not None and coverage["nodata_ratio"] > max_nodata_ratio:
+        raise ControlledFieldError(
+            "invalid_clipped_dem_coverage",
+            (
+                f"Clipped DEM nodata ratio {coverage['nodata_ratio']:.4f} exceeds "
+                f"the real DEM threshold {max_nodata_ratio:.4f}."
+            ),
+            details={"dem_clipped": str(path), "coverage": coverage, "max_nodata_ratio": max_nodata_ratio},
+        )
+    return coverage
+
+
+def _inspect_clipped_dem(path: Path) -> dict[str, Any]:
+    with rasterio.open(path) as dataset:
+        band = dataset.read(1, masked=True)
+        total = int(band.size)
+        mask = getattr(band, "mask", False)
+        masked_count = total if mask is True else 0 if mask is False else int(mask.sum())
+        values = np.asarray(band.compressed(), dtype="float64")
+        finite_values = values[np.isfinite(values)]
+        valid_count = int(finite_values.size)
+        return {
+            "path": str(path),
+            "total_pixel_count": total,
+            "masked_pixel_count": masked_count,
+            "valid_pixel_count": valid_count,
+            "nodata_ratio": 1.0 if total == 0 else float(max(masked_count, total - valid_count) / total),
+            "elevation_min_m": float(finite_values.min()) if valid_count else None,
+            "elevation_max_m": float(finite_values.max()) if valid_count else None,
+            "crs": dataset.crs.to_string() if dataset.crs else None,
+            "bounds": [float(dataset.bounds.left), float(dataset.bounds.bottom), float(dataset.bounds.right), float(dataset.bounds.top)],
+        }
+
+
+def _cleanup_dem_outputs(outputs: dict[str, Path]) -> None:
+    paths = [
+        outputs["source_reference"],
+        outputs["dem_clipped"],
+        outputs["dem_conditioned"],
+        outputs["summary_json"],
+        outputs["summary_csv"],
+        *(outputs[filename.removesuffix(".tif")] for filename in DERIVED_RASTER_FILENAMES),
+    ]
+    for path in paths:
+        try:
+            if path.exists() and not path.is_dir():
+                path.unlink()
+        except OSError:
+            continue
+    preview_dir = outputs.get("preview_dir")
+    if preview_dir and preview_dir.exists():
+        for preview in preview_dir.glob("*.png"):
+            try:
+                preview.unlink()
+            except OSError:
+                continue
 
 
 def _cached_source_paths(candidate: SourceCandidate, cache_dir: Path) -> list[Path]:
@@ -584,6 +831,7 @@ def _write_offline_fixture_dem(path: Path, geometry: Any) -> Path:
     path = ensure_data_root_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
+        _tag_synthetic_fixture_dem(path)
         return path
     minx, miny, maxx, maxy = geometry.bounds
     dx = max(maxx - minx, 0.001)
@@ -612,8 +860,28 @@ def _write_offline_fixture_dem(path: Path, geometry: Any) -> Path:
     }
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(dem.reshape((1, height, width)))
-        dst.update_tags(source="offline_fixture", advisory="not_operational_elevation")
+        dst.update_tags(
+            source="synthetic_offline_fixture",
+            synthetic_fixture="true",
+            test_only="true",
+            advisory="not_operational_elevation",
+            warning=SYNTHETIC_FIXTURE_WARNING,
+        )
     return path
+
+
+def _tag_synthetic_fixture_dem(path: Path) -> None:
+    try:
+        with rasterio.open(path, "r+") as dataset:
+            dataset.update_tags(
+                source="synthetic_offline_fixture",
+                synthetic_fixture="true",
+                test_only="true",
+                advisory="not_operational_elevation",
+                warning=SYNTHETIC_FIXTURE_WARNING,
+            )
+    except Exception:
+        return
 
 
 def _source_aoi(boundary: gpd.GeoDataFrame) -> SourceAOI:
@@ -658,7 +926,12 @@ def _expected_paths(grower_slug: str, farm_slug: str, field_slug: str) -> dict[s
     }
 
 
-def _manifest_reusable(manifest_path: Path, outputs: dict[str, Path]) -> bool:
+def _manifest_reusable(
+    manifest_path: Path,
+    outputs: dict[str, Path],
+    *,
+    allow_synthetic: bool = False,
+) -> bool:
     if not manifest_path.exists():
         return False
     try:
@@ -667,6 +940,16 @@ def _manifest_reusable(manifest_path: Path, outputs: dict[str, Path]) -> bool:
         return False
     if manifest.get("status") not in {"complete", None}:
         return False
+    if _manifest_is_synthetic_fixture(manifest) and not allow_synthetic:
+        return False
+    if not allow_synthetic:
+        try:
+            _validate_clipped_dem_coverage(
+                outputs["dem_clipped"],
+                max_nodata_ratio=MAX_REAL_CLIPPED_NODATA_RATIO,
+            )
+        except Exception:
+            return False
     required = [
         outputs["source_reference"],
         outputs["dem_clipped"],
@@ -676,6 +959,30 @@ def _manifest_reusable(manifest_path: Path, outputs: dict[str, Path]) -> bool:
         *(outputs[filename.removesuffix(".tif")] for filename in DERIVED_RASTER_FILENAMES),
     ]
     return all(path.exists() for path in required)
+
+
+def _manifest_is_synthetic_fixture(manifest: dict[str, Any]) -> bool:
+    selected = manifest.get("selected_source")
+    processing = manifest.get("processing_parameters")
+    source_urls = manifest.get("source_urls")
+    warnings = manifest.get("warnings")
+    if manifest.get("synthetic_fixture") is True:
+        return True
+    if isinstance(processing, dict) and processing.get("offline_fixtures") is True:
+        return True
+    if isinstance(selected, dict) and selected.get("adapter_id") == "offline_fixtures":
+        return True
+    synthetic_url_prefixes = ("synthetic://", "runtime-cache://offline-fixtures/")
+    if isinstance(source_urls, list) and any(
+        str(url).startswith(synthetic_url_prefixes) for url in source_urls
+    ):
+        return True
+    if isinstance(warnings, list) and any(
+        "offline_fixture" in str(warning) or "synthetic_fixture" in str(warning)
+        for warning in warnings
+    ):
+        return True
+    return False
 
 
 def _dry_run_plan(
@@ -712,6 +1019,7 @@ def _build_success_manifest(
     outputs: dict[str, Path],
     source_paths: list[Path],
     analysis_crs: str,
+    source_selection_attempts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     selected = selection.selected
     output_assets = _manifest_outputs(
@@ -727,9 +1035,21 @@ def _build_success_manifest(
     }
     warnings = list(selected.warnings)
     warnings.extend(str(warning) for warning in derivative_result.quality_warnings)
+    synthetic_fixture = bool(args.offline_fixtures)
+    if synthetic_fixture:
+        warnings.extend(
+            [
+                "synthetic_fixture=true",
+                "not_real_dem_evidence=true",
+                SYNTHETIC_FIXTURE_WARNING,
+            ]
+        )
     return {
         "status": "complete",
         "run_id": str(uuid.uuid4()),
+        "synthetic_fixture": synthetic_fixture,
+        "test_only": synthetic_fixture,
+        "evidence_warning": SYNTHETIC_FIXTURE_WARNING if synthetic_fixture else None,
         "field_id": field["field_id"],
         "field_slug": field["field_slug"],
         "grower_slug": args.grower,
@@ -754,9 +1074,13 @@ def _build_success_manifest(
             "source_policy": args.source_policy,
             "allow_live_downloads": bool(args.allow_live_downloads),
             "offline_fixtures": bool(args.offline_fixtures),
+            "allow_synthetic_fixtures": bool(args.allow_synthetic_fixtures),
+            "synthetic_fixture": synthetic_fixture,
+            "max_real_clipped_nodata_ratio": None if synthetic_fixture else MAX_REAL_CLIPPED_NODATA_RATIO,
             "conditioning_status": derivative_result.conditioning_status,
             "conditioning_backend": derivative_result.conditioning_backend,
         },
+        "source_selection_attempts": source_selection_attempts or [],
         "warnings": list(dict.fromkeys(warnings)),
         "outputs": output_assets,
         "checksums": checksums,
@@ -860,6 +1184,7 @@ def _asset_record(
     warnings: Any = None,
 ) -> dict[str, Any]:
     exists = path.exists()
+    synthetic_fixture = selected.adapter_id == "offline_fixtures"
     return {
         "href": str(path),
         "type": media_type,
@@ -867,6 +1192,9 @@ def _asset_record(
         "title": title,
         "description": title,
         "product_name": product_name,
+        "synthetic_fixture": synthetic_fixture,
+        "test_only": synthetic_fixture,
+        "evidence_warning": SYNTHETIC_FIXTURE_WARNING if synthetic_fixture else None,
         "filename": path.name,
         "proj:epsg": None,
         "proj:wkt2": analysis_crs,
@@ -889,13 +1217,26 @@ def _asset_record(
 
 
 def _write_source_reference(path: Path, selection: SourceSelection, *, source_paths: list[Path]) -> None:
+    synthetic_fixture = selection.selected.adapter_id == "offline_fixtures"
+    warnings = list(selection.warnings)
+    if synthetic_fixture:
+        warnings.extend(
+            [
+                "synthetic_fixture=true",
+                "not_real_dem_evidence=true",
+                SYNTHETIC_FIXTURE_WARNING,
+            ]
+        )
     payload = {
         "generated_at": _utc_now(),
+        "synthetic_fixture": synthetic_fixture,
+        "test_only": synthetic_fixture,
+        "evidence_warning": SYNTHETIC_FIXTURE_WARNING if synthetic_fixture else None,
         "selected_source": selection.selected.to_dict(),
         "candidate_sources": [candidate.to_dict() for candidate in selection.ranked_candidates],
         "source_paths": [str(path) for path in source_paths],
         "quality_warning": selection.quality_warning,
-        "warnings": list(selection.warnings),
+        "warnings": list(dict.fromkeys(warnings)),
     }
     _write_json(path, payload)
 
@@ -913,6 +1254,8 @@ def _write_failure_manifest(field: dict[str, Any], args: argparse.Namespace, exc
         "farm_slug": args.farm,
         "reason": exc.reason,
         "message": str(exc),
+        "synthetic_fixture": bool(args.offline_fixtures),
+        "source_policy": args.source_policy,
         "details": exc.details,
         "generated_at": _utc_now(),
     }
@@ -935,7 +1278,13 @@ def _append_farm_summary(grower_slug: str, farm_slug: str, row: dict[str, Any]) 
         writer.writerows(rows)
 
 
-def _farm_summary_row(field: dict[str, Any], outputs: dict[str, Path], *, status: str) -> dict[str, Any]:
+def _farm_summary_row(
+    field: dict[str, Any],
+    outputs: dict[str, Path],
+    *,
+    status: str,
+    synthetic_fixture: bool = False,
+) -> dict[str, Any]:
     summary = _read_json(outputs["summary_json"])
     elevation = summary.get("elevation_range_m", {}) if isinstance(summary, dict) else {}
     slope = summary.get("slope_percentiles", {}) if isinstance(summary, dict) else {}
@@ -943,6 +1292,8 @@ def _farm_summary_row(field: dict[str, Any], outputs: dict[str, Path], *, status
         "field_id": field["field_id"],
         "field_slug": field["field_slug"],
         "status": status,
+        "synthetic_fixture": "true" if synthetic_fixture else "false",
+        "evidence_warning": SYNTHETIC_FIXTURE_WARNING if synthetic_fixture else "",
         "manifest_path": str(outputs["manifest"]),
         "dem_clipped": str(outputs["dem_clipped"]),
         "conditioning_status": summary.get("conditioning_status", "") if isinstance(summary, dict) else "",

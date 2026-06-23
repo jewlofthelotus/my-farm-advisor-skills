@@ -23,12 +23,15 @@ Use this nested skill for field-scale elevation and terrain work in My Farm Advi
 - Open [`src/dem_terrain/terrain_contract.py`](src/dem_terrain/terrain_contract.py) for product names, path templates, and manifest fields.
 - Open [`src/dem_terrain/source_resolver.py`](src/dem_terrain/source_resolver.py) for adapter ids, candidate records, ranking policy, and fallback warnings.
 - Use [`src/dem_terrain/package_validation.py`](src/dem_terrain/package_validation.py) to validate runtime DEM package invariants from a temp or external runtime manifest.
-- Use the runtime CLI at `data-pipeline/src/scripts/ingest/download_dem_terrain.py` from the installed data-pipeline source copy when a farm needs actual DEM terrain products.
+- Use `data-pipeline/src/scripts/run_farm_pipeline.py` for normal farm initialization and add-field runs; it includes real DEM terrain by default after field boundaries.
+- Use the direct runtime CLI at `data-pipeline/src/scripts/ingest/download_dem_terrain.py` from the installed data-pipeline source copy for focused dry runs, package inspection, or operator-led terrain retries.
 - Read [PROVENANCE.md](PROVENANCE.md) before adding or changing elevation sources.
 
 ## Routing Notes
 
 - Invoke this skill when the request mentions DEM, elevation, slope, aspect, hillshade, curvature, terrain wetness, flow accumulation, depressions, relative elevation, erosion proxies, or DEM source provenance.
 - Use it for U.S. 3DEP, Illinois ILHMP/ISGS, NASADEM, Copernicus GLO-30, ALOS AW3D30, optional OpenTopography, and Open-Elevation research-only policy questions.
-- Keep execution explicit: dry-run is no-download planning, offline fixtures are the safe full-package smoke, and live downloads require `--allow-live-downloads`.
+- Keep execution clear: default farm orchestration runs real DEM terrain with live real-source controls, `--structure-test` remains no-DEM and no-download, and `--skip-dem-terrain` is only an explicit operator override.
+- Treat offline fixtures as direct CLI test-only synthetic smokes that require `--allow-synthetic-fixtures`; they are unreachable from default orchestration and are not real grower DEM evidence.
+- Generated farm and field reports do not integrate terrain metrics in this change.
 - Do not call hosted Open-Elevation APIs and do not commit generated DEM rasters, previews, caches, summaries, manifests, or downloaded tiles.

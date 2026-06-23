@@ -36,6 +36,11 @@ except ImportError:  # pragma: no cover - exercised by direct CLI smoke usage.
 
 DEFAULT_NODATA_RATIO_THRESHOLD = 0.75
 FIELD_BOUNDARY_FILENAME = "field_boundary.geojson"
+SOURCE_REFERENCE_FILENAME = "dem_source_reference.json"
+SYNTHETIC_FIXTURE_WARNING = (
+    "SYNTHETIC DEM FIXTURE ONLY - not real grower DEM evidence and not valid for agronomic decisions"
+)
+SYNTHETIC_URL_PREFIXES = ("synthetic://", "runtime-cache://offline-fixtures/")
 
 
 @dataclass(slots=True)
@@ -77,6 +82,7 @@ def validate_dem_terrain_package(
     nodata_ratio_threshold: float = DEFAULT_NODATA_RATIO_THRESHOLD,
     repo_root: str | Path | None = None,
     check_git: bool = True,
+    allow_synthetic_fixture_package: bool = False,
 ) -> PackageValidationResult:
     """Validate a runtime DEM terrain package and return structured results."""
 
@@ -91,6 +97,14 @@ def validate_dem_terrain_package(
     if not isinstance(outputs, dict):
         result.add_error("manifest.outputs must be an object")
         outputs = {}
+
+    _validate_not_synthetic_fixture_package(
+        payload,
+        outputs,
+        manifest,
+        result,
+        allow_synthetic_fixture_package=allow_synthetic_fixture_package,
+    )
 
     _validate_required_outputs(outputs, manifest, result)
     _validate_source_warnings(payload, result)
@@ -201,6 +215,117 @@ def _validate_source_warnings(payload: dict[str, Any], result: PackageValidation
         result.add_check("DSM warning invariant satisfied")
 
 
+def _validate_not_synthetic_fixture_package(
+    payload: dict[str, Any],
+    outputs: dict[str, Any],
+    manifest_path: Path,
+    result: PackageValidationResult,
+    *,
+    allow_synthetic_fixture_package: bool,
+) -> None:
+    matches = list(_synthetic_marker_matches(payload, location="manifest"))
+    source_reference = _load_source_reference_for_synthetic_scan(outputs, manifest_path, result)
+    if source_reference is not None:
+        matches.extend(_synthetic_marker_matches(source_reference, location="source reference"))
+
+    if not matches:
+        result.add_check("synthetic fixture marker scan passed")
+        return
+
+    detail = "; ".join(matches[:8])
+    if len(matches) > 8:
+        detail += f"; +{len(matches) - 8} more"
+    message = "synthetic DEM fixture package detected: " + detail
+    if allow_synthetic_fixture_package:
+        result.add_warning(message + " (allowed by --allow-synthetic-fixture-package)")
+        result.add_check("synthetic fixture marker scan inspected with explicit allowance")
+        return
+    result.add_error(message + "; rerun with --allow-synthetic-fixture-package only for test inspection")
+
+
+def _load_source_reference_for_synthetic_scan(
+    outputs: dict[str, Any],
+    manifest_path: Path,
+    result: PackageValidationResult,
+) -> dict[str, Any] | None:
+    candidates = _source_reference_candidates(outputs, manifest_path)
+    if not candidates:
+        result.add_warning("DEM source reference not found for synthetic marker scan")
+        return None
+    for candidate in candidates:
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            result.add_error(f"DEM source reference is not valid JSON for synthetic scan: {candidate}: {exc}")
+            return None
+        except OSError as exc:
+            result.add_error(f"DEM source reference could not be read for synthetic scan: {candidate}: {exc}")
+            return None
+        if not isinstance(payload, dict):
+            result.add_error(f"DEM source reference root must be a JSON object for synthetic scan: {candidate}")
+            return None
+        result.add_check(f"DEM source reference loaded for synthetic marker scan: {candidate}")
+        return payload
+    result.add_warning("DEM source reference not found for synthetic marker scan")
+    return None
+
+
+def _source_reference_candidates(outputs: dict[str, Any], manifest_path: Path) -> list[Path]:
+    candidates: list[Path] = []
+    asset = outputs.get("dem_source_reference")
+    if isinstance(asset, dict) and isinstance(asset.get("href"), str) and asset["href"].strip():
+        candidates.append(_resolve_href(asset["href"], manifest_path))
+    candidates.extend(
+        [
+            manifest_path.parent / SOURCE_REFERENCE_FILENAME,
+            manifest_path.parent.parent / "terrain" / "dem" / SOURCE_REFERENCE_FILENAME,
+            manifest_path.parent.parent / "dem" / SOURCE_REFERENCE_FILENAME,
+        ]
+    )
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def _synthetic_marker_matches(value: Any, *, location: str) -> Iterable[str]:
+    yield from _synthetic_marker_matches_at(value, path=location)
+
+
+def _synthetic_marker_matches_at(value: Any, *, path: str) -> Iterable[str]:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            item_path = f"{path}.{key}"
+            key_text = str(key)
+            if key_text in {"synthetic_fixture", "test_only"}:
+                if item is True:
+                    yield f"{item_path}=true"
+                elif isinstance(item, str) and item.strip().lower() == "true":
+                    yield f"{item_path}=true"
+            yield from _synthetic_marker_matches_at(item, path=item_path)
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _synthetic_marker_matches_at(item, path=f"{path}[{index}]")
+        return
+    if isinstance(value, str):
+        stripped = value.strip()
+        lowered = stripped.lower()
+        if lowered in {"synthetic_fixture=true", "test_only=true"}:
+            yield f"{path}={stripped}"
+        if stripped.startswith(SYNTHETIC_URL_PREFIXES):
+            yield f"{path}={stripped}"
+        if SYNTHETIC_FIXTURE_WARNING.lower() in lowered:
+            yield f"{path} contains synthetic fixture evidence warning"
+
+
 def _validate_rasters(
     outputs: dict[str, Any],
     payload: dict[str, Any],
@@ -245,7 +370,10 @@ def _validate_rasters(
                         result.add_error(
                             f"raster {product_name} CRS mismatch: expected {expected_crs}, got {dataset.crs}"
                         )
-                ratio = _dataset_nodata_ratio(dataset)
+                validity = _dataset_validity(dataset)
+                ratio = float(validity["nodata_ratio"])
+                if int(validity["valid_pixel_count"]) <= 0:
+                    result.add_error(f"raster {product_name} has no valid finite pixels")
                 if ratio > nodata_ratio_threshold:
                     result.add_error(
                         f"raster {product_name} nodata ratio {ratio:.4f} exceeds threshold {nodata_ratio_threshold:.4f}"
@@ -280,15 +408,30 @@ def _validate_rasters(
     )
 
 
-def _dataset_nodata_ratio(dataset: Any) -> float:
+def _dataset_validity(dataset: Any) -> dict[str, Any]:
     band = dataset.read(1, masked=True)
     total = int(band.size)
     if total == 0:
-        return 1.0
+        return {"total_pixel_count": 0, "masked_pixel_count": 0, "valid_pixel_count": 0, "nodata_ratio": 1.0}
     mask = getattr(band, "mask", False)
     if isinstance(mask, bool):
-        return 1.0 if mask else 0.0
-    return float(mask.sum()) / float(total)
+        masked_count = total if mask else 0
+    else:
+        masked_count = int(mask.sum())
+    values = band.compressed()
+    try:
+        import numpy as np
+
+        valid_count = int(np.isfinite(values).sum())
+    except Exception:
+        valid_count = int(len(values))
+    nodata_count = max(masked_count, total - valid_count)
+    return {
+        "total_pixel_count": total,
+        "masked_pixel_count": masked_count,
+        "valid_pixel_count": valid_count,
+        "nodata_ratio": float(nodata_count) / float(total),
+    }
 
 
 def _dataset_pixel_size(dataset: Any) -> float | None:
@@ -444,7 +587,12 @@ def _find_repo_root(start: Path) -> Path | None:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Validate a runtime DEM terrain output package.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Validate a runtime DEM terrain output package. Synthetic fixture packages are rejected by "
+            "default so test-only DEM artifacts cannot be accepted as real grower evidence."
+        )
+    )
     parser.add_argument("manifest", help="Path to dem_terrain_manifest.json")
     parser.add_argument(
         "--field-boundary",
@@ -458,6 +606,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--repo-root", help="Optional repository root for tracked generated asset checks")
     parser.add_argument("--no-git-check", action="store_true", help="Skip git tracked generated asset invariant")
+    parser.add_argument(
+        "--allow-synthetic-fixture-package",
+        action="store_true",
+        help=(
+            "TEST ONLY: inspect a package containing synthetic fixture markers instead of rejecting it by default"
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="Print JSON result instead of text summary")
     return parser
 
@@ -470,6 +625,7 @@ def main(argv: list[str] | None = None) -> int:
         nodata_ratio_threshold=args.nodata_ratio_threshold,
         repo_root=args.repo_root,
         check_git=not args.no_git_check,
+        allow_synthetic_fixture_package=args.allow_synthetic_fixture_package,
     )
     if args.json:
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
