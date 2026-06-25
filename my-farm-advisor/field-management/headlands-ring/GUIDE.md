@@ -74,6 +74,38 @@ Render a simple map showing field boundary, headlands ring, and optional interio
 - Require projected CRS for width-based calculations in meters
 - Use deterministic field metrics for repeatable downstream reporting
 
+## Create a Headlands Ring from a Boundary File
+
+The `create_headlands_ring_from_boundary()` function provides an end-to-end
+workflow that starts from an EPSG:4326 field boundary and produces two
+GeoPackage files:
+
+1. **field_boundary.gpkg** — the original boundary with `meters_squared`
+   and `acres` attributes
+2. **headlands_ring.gpkg** — the headlands ring with `meters_squared`
+   and `acres` attributes
+
+The function automatically detects the UTM zone from the boundary
+centroid, performs all buffer and area calculations in meters, then
+reprojects the results back to EPSG:4326.
+
+```bash
+uv run --with geopandas python << 'EOF'
+import geopandas as gpd
+from headlands_ring import create_headlands_ring_from_boundary
+
+boundary = gpd.read_file(
+    "my-farm-advisor/field-management/field-boundaries/examples/real_10_fields_iowa.geojson"
+)
+original, ring = create_headlands_ring_from_boundary(boundary, width_m=21.0)
+print(original[['meters_squared', 'acres']])
+print(ring[['meters_squared', 'acres']])
+EOF
+```
+
+A runnable example script is available at
+`examples/create_headlands_ring_from_boundary.py`.
+
 ## Dependencies
 
 - `geopandas`
