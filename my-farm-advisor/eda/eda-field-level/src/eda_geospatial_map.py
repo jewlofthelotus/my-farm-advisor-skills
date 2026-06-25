@@ -5,13 +5,16 @@ Produce a single static map showing all field boundaries with state outlines
 and lat/lon graticule. Dynamically discovers growers from the runtime data tree.
 """
 
+import numpy as np
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+from matplotlib.colors import to_rgb
+from matplotlib.patches import Patch
+from shapely.geometry import box
 
 from _discover_growers import (
     discover_growers,
-    filter_states_from_fields,
     load_states_geojson,
     parse_args,
     get_cli_filter,
@@ -55,11 +58,30 @@ fields_gdf = gpd.GeoDataFrame(
     crs=all_fields[0].crs,
 )
 
+# Project to equal-area CRS for acreage + centroids, then extract lon/lat for scatter
+fields_projected = fields_gdf.to_crs("EPSG:5070")
+fields_gdf["area_acres"] = fields_projected.geometry.area / 4046.86
+centroids_projected = fields_projected.geometry.centroid
+centroids_geo = centroids_projected.to_crs(fields_gdf.crs)
+fields_gdf["centroid_lon"] = centroids_geo.x
+fields_gdf["centroid_lat"] = centroids_geo.y
+
 # ---------------------------------------------------------------------------
-# Determine context states from field bounds
+# Determine context states from plot extent
 # ---------------------------------------------------------------------------
-context_states = filter_states_from_fields(fields_gdf, states_gdf)
-our_states = context_states[context_states["state_code"].isin({g.state for g in growers})]
+field_bounds = fields_gdf.total_bounds
+pad = 1.0
+plot_bbox = box(field_bounds[0] - pad, field_bounds[1] - pad,
+                field_bounds[2] + pad, field_bounds[3] + pad)
+plot_bbox_gdf = gpd.GeoDataFrame(geometry=[plot_bbox], crs=fields_gdf.crs)
+context_states = states_gdf[states_gdf.geometry.intersects(plot_bbox_gdf.union_all())]
+grower_state_codes = {g.state for g in growers}
+grower_states = states_gdf[states_gdf["state_code"].isin(grower_state_codes)]
+context_states = gpd.GeoDataFrame(
+    gpd.pd.concat([context_states, grower_states]).drop_duplicates(subset="state_code"),
+    crs=states_gdf.crs,
+)
+our_states = context_states[context_states["state_code"].isin(grower_state_codes)]
 
 # ---------------------------------------------------------------------------
 # Plot
@@ -68,41 +90,51 @@ fig, ax = plt.subplots(figsize=(14, 10))
 
 # Background context states (light grey)
 if not context_states.empty:
-    context_states.plot(ax=ax, color="#f5f5f5", edgecolor="#cccccc", linewidth=0.5, zorder=1)
+    context_states.plot(ax=ax, color="#f5f5f5", edgecolor="#bbbbbb", linewidth=0.8, zorder=1)
 
 # Our states (slightly darker outline)
 if not our_states.empty:
     our_states.plot(ax=ax, color="#eeeeee", edgecolor="#666666", linewidth=1.2, zorder=2)
 
-# Field boundaries
+# Field locations — scaled circles: larger fields = lighter, smaller fields = darker
 for g in growers:
-    subset = fields_gdf[fields_gdf["grower"] == g.grower_slug]
+    subset = fields_gdf[fields_gdf["grower"] == g.grower_slug].sort_values("area_acres", ascending=False)
     if not subset.empty:
-        subset.plot(
-            ax=ax,
-            facecolor=g.color,
-            edgecolor="black",
-            linewidth=0.6,
-            alpha=0.55,
+        sizes = 15 + subset["area_acres"] ** 0.5 * 30
+        base = np.array(to_rgb(g.color))
+        n = len(subset)
+        t = np.arange(n)[::-1] / max(n - 1, 1)
+        dark = base * 0.4
+        light = base + (1.0 - base) * 0.5
+        colors = np.clip(dark[None, :] + t[:, None] * (light - dark)[None, :], 0, 1)
+        ax.scatter(
+            subset["centroid_lon"],
+            subset["centroid_lat"],
+            s=sizes,
+            c=colors,
+            alpha=1.0,
+            edgecolors="none",
             zorder=3,
             label=g.grower_display,
         )
 
-# Legend + labels
-ax.legend(title="Grower", loc="lower right", framealpha=0.9)
+# Legend outside plot area (right side) — uniform swatches per grower
+handles = [Patch(color=g.color, label=g.grower_display) for g in growers]
+ax.legend(handles=handles, title="Grower", loc="upper left", bbox_to_anchor=(1.02, 1), framealpha=0.9)
 state_names = ", ".join(sorted({g.state for g in growers}))
-ax.set_title(f"Field Boundaries — {state_names}\n({len(fields_gdf)} fields total)", fontsize=14, fontweight="bold")
+ax.set_title(f"Field Locations — {state_names}\n({len(fields_gdf)} fields total)", fontsize=14, fontweight="bold")
 
 # Graticule
-bounds = fields_gdf.total_bounds
-ax.set_xlim(bounds[0] - 1, bounds[2] + 1)
-ax.set_ylim(bounds[1] - 1, bounds[3] + 1)
+ax.set_xlim(field_bounds[0] - pad, field_bounds[2] + pad)
+ax.set_ylim(field_bounds[1] - pad, field_bounds[3] + pad)
+ax.set_axisbelow(False)
 ax.xaxis.set_major_locator(mticker.MultipleLocator(2))
-ax.yaxis.set_major_locator(mticker.MultipleLocator(2))
+ax.yaxis.set_major_locator(mticker.MultipleLocator(1))
 ax.grid(True, linestyle="--", alpha=0.4, color="#666666")
 ax.set_xlabel("Longitude", fontsize=11)
 ax.set_ylabel("Latitude", fontsize=11)
 
+fig.subplots_adjust(right=0.82)
 plt.tight_layout()
 out_path = resolve_output_dir() / "geospatial_map.png"
 fig.savefig(out_path, dpi=300, bbox_inches="tight")
