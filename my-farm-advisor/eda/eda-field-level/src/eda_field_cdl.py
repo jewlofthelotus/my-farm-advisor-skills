@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+from matplotlib.colors import ListedColormap
 from matplotlib.patches import FancyBboxPatch, Polygon
 
 from _discover_growers import (
@@ -201,7 +202,8 @@ for g in growers:
     heat = heat.reindex(columns=years)
 
     all_crops = sorted(dominant["crop_name"].unique())
-    cmap = sns.color_palette("tab20", n_colors=len(all_crops))
+    crop_colors_list = [CROP_COLORS.get(c, "#B0C4DE") for c in all_crops]
+    cmap = ListedColormap(crop_colors_list)
     crop_to_int = {c: i for i, c in enumerate(all_crops)}
     heat_num = heat.map(lambda x: crop_to_int.get(x, -1) if pd.notna(x) else -1)
 
@@ -223,7 +225,7 @@ for g in growers:
     ax.set_ylabel("Field ID", fontsize=12)
     ax.set_title(f"Per-Field Crop Rotation Heatmap — {g.grower_display}\n(Dominant CDL crop per field-year)", fontsize=13, fontweight="bold")
 
-    handles = [plt.Rectangle((0, 0), 1, 1, color=cmap[i]) for i in range(len(all_crops))]
+    handles = [plt.Rectangle((0, 0), 1, 1, color=cmap.colors[i]) for i in range(len(all_crops))]
     ax.legend(handles, all_crops, title="Crop", loc="upper left", bbox_to_anchor=(1.02, 1), framealpha=0.9)
 
     plt.tight_layout()
