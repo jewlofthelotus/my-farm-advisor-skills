@@ -13,7 +13,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_SCRIPTS_DIR))
 sys.path.insert(0, str(_SCRIPTS_DIR / "lib"))
 
-GEOADMIN_LEVEL_CHOICES = ("l0_countries", "l1_states", "l2_counties")
+GEOADMIN_LEVEL_CHOICES = ("l0_countries", "l1_states", "l2_counties", "l3_lakes")
 
 
 def parse_args() -> argparse.Namespace:

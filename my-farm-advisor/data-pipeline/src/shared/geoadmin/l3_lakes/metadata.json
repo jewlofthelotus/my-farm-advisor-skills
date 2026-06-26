@@ -1,0 +1,18 @@
+{
+  "level_slug": "l3_lakes",
+  "source_name": "natural-earth",
+  "source_url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_lakes.zip",
+  "archive_name": "ne_10m_lakes.zip",
+  "output_geojson": "data/my-farm-advisor/shared/geoadmin/l3_lakes/lakes.geojson",
+  "output_parquet": "data/my-farm-advisor/shared/geoadmin/l3_lakes/lakes.parquet",
+  "vintage": "natural-earth-10m",
+  "feature_count": 1355,
+  "columns": [
+    "feature_class",
+    "name",
+    "admin",
+    "scale_rank",
+    "source_name",
+    "source_vintage"
+  ]
+}
