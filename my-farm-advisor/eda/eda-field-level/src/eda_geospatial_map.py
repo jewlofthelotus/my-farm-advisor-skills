@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 eda_geospatial_map.py
-Produce a single static map showing all field boundaries with state outlines
-and lat/lon graticule. Dynamically discovers growers from the runtime data tree.
+Produce a cross-grower centroid field map with area-scaled markers on a
+coastline-clipped state-outline basemap with lat/lon graticule.
+Dynamically discovers growers from the runtime data tree.
 """
 
 import numpy as np
@@ -35,6 +36,12 @@ if not growers:
 # Load data
 # ---------------------------------------------------------------------------
 states_gdf = load_states_geojson()
+
+# Water-body overlay (lakes) — rendered above state fills so lake
+# areas appear blue instead of grey, e.g. Illinois extending into Lake Michigan
+lakes_path = resolve_data_root() / "shared" / "geoadmin" / "l3_lakes" / "lakes.geojson"
+if lakes_path.exists():
+    lakes_gdf = gpd.read_file(lakes_path)
 all_fields = []
 for g in growers:
     boundary_path = (
@@ -96,6 +103,12 @@ if not context_states.empty:
 if not our_states.empty:
     our_states.plot(ax=ax, color="#eeeeee", edgecolor="#666666", linewidth=1.2, zorder=2)
 
+# Water bodies — rendered above state fills so lake areas appear blue
+if lakes_path.exists():
+    lakes_in_view = lakes_gdf[lakes_gdf.geometry.intersects(plot_bbox_gdf.union_all())]
+    if not lakes_in_view.empty:
+        lakes_in_view.plot(ax=ax, color="#b3d4f0", edgecolor="none", linewidth=0, zorder=2.5)
+
 # Field locations — scaled circles: larger fields = lighter, smaller fields = darker
 for g in growers:
     subset = fields_gdf[fields_gdf["grower"] == g.grower_slug].sort_values("area_acres", ascending=False)
@@ -122,7 +135,7 @@ for g in growers:
 handles = [Patch(color=g.color, label=g.grower_display) for g in growers]
 ax.legend(handles=handles, title="Grower", loc="upper left", bbox_to_anchor=(1.02, 1), framealpha=0.9)
 state_names = ", ".join(sorted({g.state for g in growers}))
-ax.set_title(f"Field Locations — {state_names}\n({len(fields_gdf)} fields total)", fontsize=14, fontweight="bold")
+ax.set_title(f"Cross Grower Field Map — {state_names}\n({len(fields_gdf)} fields · centroid markers scaled by area)", fontsize=14, fontweight="bold")
 
 # Graticule
 ax.set_xlim(field_bounds[0] - pad, field_bounds[2] + pad)
@@ -136,7 +149,7 @@ ax.set_ylabel("Latitude", fontsize=11)
 
 fig.subplots_adjust(right=0.82)
 plt.tight_layout()
-out_path = resolve_output_dir() / "geospatial_map.png"
+out_path = resolve_output_dir() / "cross_grower_field_centroid_map.png"
 fig.savefig(out_path, dpi=300, bbox_inches="tight")
 plt.close(fig)
 

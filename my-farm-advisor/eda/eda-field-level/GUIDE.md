@@ -30,9 +30,9 @@ All scripts live in `src/` and expect `$DATA_PIPELINE_DATA_ROOT` to point at the
 
 | Script | Outputs | What it produces |
 |---|---|---|
-| `eda_geospatial_map.py` | M2 PNG | All 30 field polygons on a state-outline basemap with lat/lon graticule |
-| `eda_field_boundaries.py` | V1c PNG, V2a PNG, A1a PNG + CSV | Cumulative area bars, compactness box plot, compactness-vs-area scatter + stats |
-| `eda_field_cdl.py` | V3c PNGs, V4a PNGs, A2a PNG + CSV | Crop-transition Sankey per grower, per-field rotation heatmap, Shannon diversity bar + table |
+| `eda_geospatial_map.py` | M2 PNG | Cross-grower centroid field map with area-scaled markers on a state-outline basemap with water-body fill for the Great Lakes |
+| `eda_field_boundaries.py` | V1c PNG | Cumulative area bars |
+| `eda_field_cdl.py` | V3c PNG, V4a PNGs | Cross-grower crop composition flow, per-field rotation heatmap |
 | `eda_field_weather.py` | V5a PNG, V6b PNG, A3c PNG + CSV | Seasonal violin plot, GDD comparison, precip/GDD anomaly vs crop-diversity scatter + correlation table |
 
 ## Quick Start

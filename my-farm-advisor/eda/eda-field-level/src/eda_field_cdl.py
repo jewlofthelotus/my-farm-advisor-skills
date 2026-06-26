@@ -101,8 +101,11 @@ rot_df = pd.concat(rot_all, ignore_index=True) if rot_all else pd.DataFrame()
 # ---------------------------------------------------------------------------
 # Helper: alluvial / flow between years
 # ---------------------------------------------------------------------------
-def draw_flow_chart(grower_label, cdl_sub, out_path):
+def _draw_flow_on_ax(ax, cdl_sub, grower_label):
+    """Draw stacked bars + flow bands on a given axes."""
     if cdl_sub.empty:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=12, color="gray")
+        ax.set_title(grower_label, fontsize=13, fontweight="bold")
         return
     agg = cdl_sub.groupby(["year", "crop_name"])["pixel_count"].sum().reset_index()
     total_per_year = agg.groupby("year")["pixel_count"].sum().to_dict()
@@ -111,7 +114,6 @@ def draw_flow_chart(grower_label, cdl_sub, out_path):
     crops = sorted(agg["crop_name"].unique())
     crop_color = {c: CROP_COLORS.get(c, "#B0C4DE") for c in crops}
 
-    fig, ax = plt.subplots(figsize=(10, 7))
     bar_w = 0.35
     gap = 1.5
     xs = [i * gap for i in range(len(years))]
@@ -165,27 +167,35 @@ def draw_flow_chart(grower_label, cdl_sub, out_path):
     ax.set_xticklabels(years)
     ax.set_xlabel("Year", fontsize=12)
     ax.set_ylabel("Pixel Count (CDL)", fontsize=12)
-    ax.set_title(f"Crop Composition Flow — {grower_label}\n(Stacked bars + flow bands)", fontsize=13, fontweight="bold")
+    ax.set_title(grower_label, fontsize=13, fontweight="bold")
 
     handles = [plt.Rectangle((0, 0), 1, 1, color=crop_color[c]) for c in crops if c in crop_color]
     labels = [c for c in crops if c in crop_color]
     ax.legend(handles, labels, title="Crop", loc="upper left", bbox_to_anchor=(1.02, 1), framealpha=0.9)
 
-    plt.tight_layout()
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-
 
 # ---------------------------------------------------------------------------
-# V3c — Crop-transition flow per grower
+# V3c — Cross-grower crop composition flow (combined)
 # ---------------------------------------------------------------------------
-for g in growers:
+n_growers = len(growers)
+ncols = min(3, n_growers)
+nrows = int(np.ceil(n_growers / ncols))
+fig, axes = plt.subplots(nrows, ncols, figsize=(10 * ncols, 7 * nrows))
+axes_flat = axes.flatten() if n_growers > 1 else [axes]
+
+for i, g in enumerate(growers):
     sub = cdl_df[cdl_df["grower"] == g.grower_slug]
-    if sub.empty:
-        continue
-    out = resolve_output_dir() / f"crop_transition_flow_{g.grower_slug}.png"
-    draw_flow_chart(g.grower_display, sub, out)
-    print(f"Saved: {out.name}")
+    _draw_flow_on_ax(axes_flat[i], sub, g.grower_slug)
+
+for j in range(i + 1, len(axes_flat)):
+    axes_flat[j].set_visible(False)
+
+fig.suptitle("Cross-Grower Crop Composition Flow", fontsize=16, fontweight="bold")
+plt.tight_layout(rect=[0, 0, 1, 0.96])
+out_path = resolve_output_dir() / "cross_grower_crop_composition_flow.png"
+fig.savefig(out_path, dpi=300, bbox_inches="tight")
+plt.close(fig)
+print(f"Saved: {out_path.name}")
 
 # ---------------------------------------------------------------------------
 # V4a — Per-field rotation heatmap
@@ -229,39 +239,7 @@ for g in growers:
     ax.legend(handles, all_crops, title="Crop", loc="upper left", bbox_to_anchor=(1.02, 1), framealpha=0.9)
 
     plt.tight_layout()
-    out = resolve_output_dir() / f"rotation_heatmap_{g.grower_slug}.png"
+    out = resolve_output_dir() / f"{g.grower_slug}_crop_rotation_heatmap.png"
     fig.savefig(out, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out.name}")
-
-# ---------------------------------------------------------------------------
-# A2a — Shannon diversity index by grower
-# ---------------------------------------------------------------------------
-shannon_records = []
-for g in growers:
-    sub = cdl_df[cdl_df["grower"] == g.grower_slug]
-    if sub.empty:
-        continue
-    totals = sub.groupby("crop_name")["pixel_count"].sum()
-    proportions = totals / totals.sum()
-    shannon = -sum(p * np.log(p) for p in proportions if p > 0)
-    shannon_records.append({"grower": g.grower_display, "shannon_index": round(shannon, 4)})
-
-shannon_df = pd.DataFrame(shannon_records)
-shannon_df.to_csv(resolve_output_dir() / "shannon_diversity_comparison.csv", index=False)
-print("Saved: shannon_diversity_comparison.csv")
-
-n_growers = len(shannon_df)
-fig, ax = plt.subplots(figsize=(max(7, n_growers * 1.5), 5))
-colors = [g.color for g in growers if g.grower_display in shannon_df["grower"].values]
-bars = ax.bar(shannon_df["grower"], shannon_df["shannon_index"], color=colors, edgecolor="black", alpha=0.8)
-ax.set_ylabel("Shannon Diversity Index", fontsize=12)
-ax.set_title("Crop Diversity by Grower\n(Higher = more diverse cropping system)", fontsize=13, fontweight="bold")
-for bar, val in zip(bars, shannon_df["shannon_index"]):
-    ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,
-            f"{val:.2f}", ha="center", va="bottom", fontsize=11, fontweight="bold")
-plt.tight_layout()
-fig.savefig(resolve_output_dir() / "shannon_diversity_bar.png", dpi=300, bbox_inches="tight")
-plt.close(fig)
-print("Saved: shannon_diversity_bar.png")
-print(shannon_df.to_string(index=False))
