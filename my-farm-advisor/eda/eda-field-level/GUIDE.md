@@ -30,10 +30,10 @@ All scripts live in `src/` and expect `$DATA_PIPELINE_DATA_ROOT` to point at the
 
 | Script | Outputs | What it produces |
 |---|---|---|
-| `eda_geospatial_map.py` | M2 PNG | Cross-grower centroid field map with area-scaled markers on a state-outline basemap with water-body fill for the Great Lakes |
-| `eda_field_boundaries.py` | V1c PNG | Cumulative area bars |
-| `eda_field_cdl.py` | V3c PNG, V4a PNGs | Cross-grower crop composition flow, per-field rotation heatmap |
-| `eda_field_weather.py` | V6b PNG, V7a PNG, V7c PNGs | GDD comparison box plot, average cumulative annual precip bar chart (cross-grower), per-grower daily precip faceted by year and colored by season |
+| `eda_geospatial_map.py` | `cross_grower_field_centroid_map.png` | Geospatial map of field centroids across all growers with area-scaled markers on state-outline basemap |
+| `eda_field_boundaries.py` | `cross_grower_field_area_cumulative_stacked_bar.png`, `cross_grower_field_area_histogram.png`, `cross_grower_field_count_vs_acreage.png` | Cumulative field area bar chart, faceted field-size histograms, and field count vs total acreage paired bars by grower |
+| `eda_field_cdl.py` | `cross_grower_cdl_crop_composition_flow.png`, `{grower}_cdl_crop_rotation_heatmap.png` (per grower), `{grower}_cdl_crop_composition_by_year.png` (per grower) | Cross-grower crop composition flow chart, per-grower field-level crop rotation heatmaps, and per-year CDL crop composition by grower |
+| `eda_field_weather.py` | `cross_grower_weather_average_cumulative_annual_precip.png`, `{grower}_weather_mean_daily_precip_by_season.png` (per grower), `cross_grower_weather_temp_precip_dual_axis.png` | Average cumulative annual precipitation bar chart, per-grower daily precipitation faceted by year and colored by season, and precipitation + temperature dual-axis by grower |
 
 ## Quick Start
 

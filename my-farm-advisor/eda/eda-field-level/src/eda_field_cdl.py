@@ -192,7 +192,7 @@ for j in range(i + 1, len(axes_flat)):
 
 fig.suptitle("Cross-Grower Crop Composition Flow", fontsize=16, fontweight="bold")
 plt.tight_layout(rect=[0, 0, 1, 0.96])
-out_path = resolve_output_dir() / "cross_grower_crop_composition_flow.png"
+out_path = resolve_output_dir() / "cross_grower_cdl_crop_composition_flow.png"
 fig.savefig(out_path, dpi=300, bbox_inches="tight")
 plt.close(fig)
 print(f"Saved: {out_path.name}")
@@ -239,7 +239,54 @@ for g in growers:
     ax.legend(handles, all_crops, title="Crop", loc="upper left", bbox_to_anchor=(1.02, 1), framealpha=0.9)
 
     plt.tight_layout()
-    out = resolve_output_dir() / f"{g.grower_slug}_crop_rotation_heatmap.png"
+    out = resolve_output_dir() / f"{g.grower_slug}_cdl_crop_rotation_heatmap.png"
     fig.savefig(out, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out.name}")
+
+# ---------------------------------------------------------------------------
+# V5a — CDL crop class composition by year (per grower)
+# ---------------------------------------------------------------------------
+if not cdl_df.empty:
+    crop_totals = cdl_df.groupby(["grower", "grower_label", "year", "crop_name"])["pixel_count"].sum().reset_index()
+    all_crops = sorted(crop_totals["crop_name"].unique())
+    crop_color_map = {c: CROP_COLORS.get(c, "#B0C4DE") for c in all_crops}
+
+    for g in growers:
+        sub = crop_totals[crop_totals["grower"] == g.grower_slug]
+        if sub.empty:
+            continue
+        years_cdl = sorted(sub["year"].unique())
+        n = len(years_cdl)
+        fig, axes = plt.subplots(1, n, figsize=(3 * n, 4), sharey=True)
+        if n == 1:
+            axes = [axes]
+
+        for ci, yr in enumerate(years_cdl):
+            yr_data = sub[sub["year"] == yr]
+            ax = axes[ci]
+            bottom = 0
+            for crop in all_crops:
+                val = yr_data.loc[yr_data["crop_name"] == crop, "pixel_count"].values
+                h = val[0] if len(val) else 0
+                if h > 0:
+                    ax.bar(0, h, bottom=bottom, color=crop_color_map[crop],
+                           edgecolor="white", linewidth=0.5, width=0.6)
+                    bottom += h
+            ax.set_title(str(int(yr)), fontsize=10, fontweight="bold")
+            ax.set_xticks([])
+            if ci == 0:
+                ax.set_ylabel("Pixel Count", fontsize=10)
+
+        handles = [plt.Rectangle((0, 0), 1, 1, color=crop_color_map[c]) for c in all_crops]
+        fig.legend(handles, all_crops, title="Crop", loc="lower center",
+                   ncol=len(all_crops), fontsize=9)
+        fig.suptitle(
+            f"CDL Crop Composition by Year — {g.grower_display}",
+            fontsize=14, fontweight="bold",
+        )
+        plt.tight_layout(rect=[0, 0.05, 1, 0.95])
+        out = resolve_output_dir() / f"{g.grower_slug}_cdl_crop_composition_by_year.png"
+        fig.savefig(out, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved: {out.name}")
