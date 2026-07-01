@@ -33,7 +33,7 @@ All scripts live in `src/` and expect `$DATA_PIPELINE_DATA_ROOT` to point at the
 | `eda_geospatial_map.py` | M2 PNG | Cross-grower centroid field map with area-scaled markers on a state-outline basemap with water-body fill for the Great Lakes |
 | `eda_field_boundaries.py` | V1c PNG | Cumulative area bars |
 | `eda_field_cdl.py` | V3c PNG, V4a PNGs | Cross-grower crop composition flow, per-field rotation heatmap |
-| `eda_field_weather.py` | V5a PNG, V6b PNG, A3c PNG + CSV, V7a PNG, V7b PNG, V7c PNGs | Seasonal violin plot, GDD comparison, precip/GDD anomaly vs crop-diversity scatter + correlation table, average cumulative annual precip bar chart (cross-grower), per-grower cumul. precip time-series overlay by year, per-grower daily precip faceted by year and colored by season |
+| `eda_field_weather.py` | V6b PNG, V7a PNG, V7c PNGs | GDD comparison box plot, average cumulative annual precip bar chart (cross-grower), per-grower daily precip faceted by year and colored by season |
 
 ## Quick Start
 
