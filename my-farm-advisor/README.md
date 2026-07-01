@@ -237,7 +237,7 @@ The umbrella entrypoint is [`SKILL.md`](SKILL.md). From there, the skill routes 
 | Admin            | Geospatial administration and interactive map workflows                | [`admin/INDEX.md`](admin/INDEX.md)                       |
 | Data Sources     | Canonical rebuilds, data pipelines, and farm intelligence reporting    | [`data-sources/INDEX.md`](data-sources/INDEX.md)         |
 | EDA              | Exploratory analysis, comparisons, correlations, and time-series views | [`eda/INDEX.md`](eda/INDEX.md)                           |
-| Field Management | Boundaries, field sampling, and headlands workflows                    | [`field-management/INDEX.md`](field-management/INDEX.md) |
+| Field Management | Boundaries, field sampling, headlands, and management zone workflows      | [`field-management/INDEX.md`](field-management/INDEX.md) |
 | Imagery          | Landsat and Sentinel-2 workflows for vegetation and scene analysis     | [`imagery/INDEX.md`](imagery/INDEX.md)                   |
 | Soil             | SSURGO, poster-card outputs, and CDL-based soil/crop context           | [`soil/INDEX.md`](soil/INDEX.md)                         |
 | Terrain          | DEM source policy, elevation provenance, and terrain derivatives       | [`terrain/INDEX.md`](terrain/INDEX.md)                   |
