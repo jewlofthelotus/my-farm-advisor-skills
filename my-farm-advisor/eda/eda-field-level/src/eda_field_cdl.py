@@ -98,6 +98,11 @@ for g in growers:
 cdl_df = pd.concat(cdl_all, ignore_index=True) if cdl_all else pd.DataFrame()
 rot_df = pd.concat(rot_all, ignore_index=True) if rot_all else pd.DataFrame()
 
+if not cdl_df.empty:
+    out_path = resolve_output_dir() / "cross_grower_cdl_composition.csv"
+    cdl_df.to_csv(out_path, index=False)
+    print(f"Saved: {out_path.name}")
+
 # ---------------------------------------------------------------------------
 # Helper: alluvial / flow between years
 # ---------------------------------------------------------------------------
@@ -249,6 +254,11 @@ for g in growers:
 # ---------------------------------------------------------------------------
 if not cdl_df.empty:
     crop_totals = cdl_df.groupby(["grower", "grower_label", "year", "crop_name"])["pixel_count"].sum().reset_index()
+
+    out_path = resolve_output_dir() / "cross_grower_cdl_crop_totals_by_year.csv"
+    crop_totals.to_csv(out_path, index=False)
+    print(f"Saved: {out_path.name}")
+
     all_crops = sorted(crop_totals["crop_name"].unique())
     crop_color_map = {c: CROP_COLORS.get(c, "#B0C4DE") for c in all_crops}
 

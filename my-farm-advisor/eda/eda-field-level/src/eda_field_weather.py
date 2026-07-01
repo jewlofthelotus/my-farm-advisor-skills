@@ -80,6 +80,10 @@ if not wdf.empty:
     annual_precip["precip_std"] = annual_precip["precip_std"].fillna(0.0)
     annual_precip["year"] = annual_precip["year"].astype(int)
 
+    out_path = resolve_output_dir() / "cross_grower_weather_annual_precipitation.csv"
+    annual_precip.to_csv(out_path, index=False)
+    print(f"Saved: {out_path.name}")
+
     years_sorted = sorted(annual_precip["year"].unique())
     grower_order = [g.grower_display for g in growers]
     n_growers = len(grower_order)
@@ -211,6 +215,10 @@ if not wdf.empty:
         ["grower", "grower_label", "year"]
     )[["total_precip", "mean_temp"]].mean().reset_index()
     grower_annual["year"] = grower_annual["year"].astype(int)
+
+    out_path = resolve_output_dir() / "cross_grower_weather_annual_summary.csv"
+    grower_annual.to_csv(out_path, index=False)
+    print(f"Saved: {out_path.name}")
 
     growers_list = sorted(grower_annual["grower_label"].unique())
     n = len(growers_list)
