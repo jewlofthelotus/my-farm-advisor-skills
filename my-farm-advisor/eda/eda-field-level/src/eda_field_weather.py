@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 eda_field_weather.py
-Produce GDD comparison, cumulative annual precipitation, and per-grower daily
+Produce cumulative annual precipitation and per-grower daily
 precipitation visualizations — dynamically discovered growers.
 """
 
@@ -62,41 +62,6 @@ for g in growers:
         weather_all.append(df)
 
 wdf = pd.concat(weather_all, ignore_index=True) if weather_all else pd.DataFrame()
-
-# ---------------------------------------------------------------------------
-# V6b — GDD comparison by grower (accumulated Apr–Sep, base 10°C)
-# ---------------------------------------------------------------------------
-if not wdf.empty:
-    gdd_records = []
-    for (grower, field_id, year), sub in wdf.groupby(["grower", "field_id", "year"]):
-        growing = sub[(sub["month"] >= 4) & (sub["month"] <= 9)]
-        if growing.empty:
-            continue
-        gdd = ((growing["T2M"] - 10).clip(lower=0)).sum()
-        g_label = next(g.grower_display for g in growers if g.grower_slug == grower)
-        gdd_records.append({
-            "grower": grower,
-            "grower_label": g_label,
-            "field_id": field_id,
-            "year": year,
-            "gdd": gdd,
-        })
-    gdd_df = pd.DataFrame(gdd_records)
-
-    fig, ax = plt.subplots(figsize=(max(9, len(growers) * 2), 6))
-    data_for_box = [gdd_df[gdd_df["grower_label"] == g.grower_display]["gdd"].values for g in growers]
-    bp = ax.boxplot(data_for_box, tick_labels=[g.grower_display for g in growers], patch_artist=True)
-    for patch, g in zip(bp["boxes"], growers):
-        patch.set_facecolor(g.color)
-        patch.set_alpha(0.7)
-
-    ax.set_ylabel("Accumulated GDD (°C, base 10°C)", fontsize=12)
-    ax.set_title("Growing Degree Days (Apr–Sep) by Grower\n(Per field per year)", fontsize=13, fontweight="bold")
-    plt.tight_layout()
-    out = resolve_output_dir() / "gdd_comparison_boxplot.png"
-    fig.savefig(out, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved: {out.name}")
 
 # ---------------------------------------------------------------------------
 # V7a — Cumulative annual precipitation per grower (grouped bar chart)
@@ -230,3 +195,59 @@ if not wdf.empty:
         fig.savefig(out, dpi=300, bbox_inches="tight")
         plt.close(fig)
         print(f"Saved: {out.name}")
+
+# ---------------------------------------------------------------------------
+# V8a — Temperature + precipitation dual-axis by grower across years
+# ---------------------------------------------------------------------------
+if not wdf.empty:
+    annual = wdf.groupby(
+        ["grower", "grower_label", "year", "field_id"]
+    ).agg(
+        total_precip=("PRECTOTCORR", "sum"),
+        mean_temp=("T2M", "mean"),
+    ).reset_index()
+
+    grower_annual = annual.groupby(
+        ["grower", "grower_label", "year"]
+    )[["total_precip", "mean_temp"]].mean().reset_index()
+    grower_annual["year"] = grower_annual["year"].astype(int)
+
+    growers_list = sorted(grower_annual["grower_label"].unique())
+    n = len(growers_list)
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 4), sharex=True)
+    if n == 1:
+        axes = [axes]
+
+    for ax, g_label in zip(axes, growers_list):
+        sub = grower_annual[grower_annual["grower_label"] == g_label].sort_values("year")
+        color = next((g.color for g in growers if g.grower_display == g_label), "#333333")
+
+        ax.bar(sub["year"], sub["total_precip"], color=color, alpha=0.7,
+               width=0.6, label="Precipitation", edgecolor="white")
+        ax.set_ylabel("Precip (mm)", fontsize=10, color=color)
+        ax.tick_params(axis="y", labelcolor=color)
+
+        ax2 = ax.twinx()
+        ax2.plot(sub["year"], sub["mean_temp"], color="black",
+                 marker="o", linewidth=1.5, label="Temperature")
+        ax2.set_ylabel("Mean Temp (°C)", fontsize=10, color="black")
+        ax2.tick_params(axis="y", labelcolor="black")
+
+        ax.set_title(g_label, fontsize=12, fontweight="bold")
+        ax.set_xlabel("Year")
+
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc="upper left")
+
+    fig.suptitle(
+        "Annual Precipitation and Mean Temperature by Grower",
+        fontsize=14, fontweight="bold",
+    )
+    plt.tight_layout()
+    out = resolve_output_dir() / "cross_grower_weather_temp_precip_dual_axis.png"
+    fig.savefig(out, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out.name}")
+
+
