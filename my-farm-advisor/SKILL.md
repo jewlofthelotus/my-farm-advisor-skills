@@ -39,7 +39,7 @@ Open the subtree index that matches the request:
 
 ## Routing Guidance
 
-- Use **Field Management** for boundaries, deterministic field sampling, or headlands.
+- Use **Field Management** for boundaries, deterministic field sampling, headlands, or management zones.
 - Use **Imagery** for Landsat or Sentinel-2 scene acquisition and vegetation products.
 - Use **Soil** for SSURGO and CDL-derived soil and crop-layer analysis.
 - Use **EDA** for exploration, comparisons, correlations, visualization, and time series.
