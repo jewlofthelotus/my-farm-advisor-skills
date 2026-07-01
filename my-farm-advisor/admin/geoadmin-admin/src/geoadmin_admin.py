@@ -16,7 +16,7 @@ DATA_SCRIPTS_ROOT = REPO_ROOT / "data" / "scripts"
 if str(DATA_SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(DATA_SCRIPTS_ROOT))
 
-GEOADMIN_LEVELS = ("l0_countries", "l1_states", "l2_counties")
+GEOADMIN_LEVELS = ("l0_countries", "l1_states", "l2_counties", "l3_lakes")
 
 
 def _shared_root() -> Path:
@@ -72,6 +72,7 @@ def geoadmin_level_roots() -> dict[str, Path]:
         "l0_countries": _geoadmin_level_root("l0_countries"),
         "l1_states": _geoadmin_level_root("l1_states"),
         "l2_counties": _geoadmin_level_root("l2_counties"),
+        "l3_lakes": _geoadmin_level_root("l3_lakes"),
     }
 
 
@@ -103,6 +104,15 @@ def build_source_catalog(census_year: int) -> dict[str, GeoadminSource]:
             output_geojson="counties_usa.geojson",
             output_parquet="counties_usa.parquet",
             vintage=str(census_year),
+        ),
+        "l3_lakes": GeoadminSource(
+            level_slug="l3_lakes",
+            source_name="natural-earth",
+            source_url="https://naciscdn.org/naturalearth/10m/physical/ne_10m_lakes.zip",
+            archive_name="ne_10m_lakes.zip",
+            output_geojson="lakes.geojson",
+            output_parquet="lakes.parquet",
+            vintage="natural-earth-10m",
         ),
     }
 
@@ -153,6 +163,20 @@ def standardize_geoadmin_layer(source: GeoadminSource, archive_path: Path) -> gp
                     "NAME": "state_name",
                     "REGION": "region_code",
                     "DIVISION": "division_code",
+                }
+            ),
+            geometry="geometry",
+            crs="EPSG:4326",
+        )
+    elif source.level_slug == "l3_lakes":
+        frame = _keep_columns(frame, ["featurecla", "name", "admin", "scalerank"])
+        frame = gpd.GeoDataFrame(
+            frame.rename(
+                columns={
+                    "featurecla": "feature_class",
+                    "name": "name",
+                    "admin": "admin",
+                    "scalerank": "scale_rank",
                 }
             ),
             geometry="geometry",
