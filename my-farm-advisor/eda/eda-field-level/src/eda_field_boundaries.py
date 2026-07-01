@@ -55,6 +55,10 @@ for g in growers:
 
 df = pd.DataFrame(rows)
 
+out_path = resolve_output_dir() / "cross_grower_field_boundary_metrics.csv"
+df.to_csv(out_path, index=False)
+print(f"Saved: {out_path.name}")
+
 # ---------------------------------------------------------------------------
 # V1c — Cumulative area bar per grower (stacked by field)
 # ---------------------------------------------------------------------------
@@ -123,6 +127,10 @@ summary = df.groupby("grower_label").agg(
     field_count=("field_id", "count"),
     total_area_ha=("area_ha", "sum"),
 ).reset_index()
+
+out_path = resolve_output_dir() / "cross_grower_field_count_acreage_summary.csv"
+summary.to_csv(out_path, index=False)
+print(f"Saved: {out_path.name}")
 
 grower_order = sorted(summary["grower_label"].unique())
 colors_map = {g.grower_display: g.color for g in growers}

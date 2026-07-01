@@ -73,6 +73,10 @@ centroids_geo = centroids_projected.to_crs(fields_gdf.crs)
 fields_gdf["centroid_lon"] = centroids_geo.x
 fields_gdf["centroid_lat"] = centroids_geo.y
 
+out_path = resolve_output_dir() / "cross_grower_field_centroids.csv"
+fields_gdf.drop(columns=["geometry"]).to_csv(out_path, index=False)
+print(f"Saved: {out_path.name}")
+
 # ---------------------------------------------------------------------------
 # Determine context states from plot extent
 # ---------------------------------------------------------------------------
