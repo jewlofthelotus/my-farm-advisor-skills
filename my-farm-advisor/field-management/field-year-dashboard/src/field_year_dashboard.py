@@ -23,6 +23,20 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
+_FIPS_TO_STATE = {
+    "01": "AL", "02": "AK", "04": "AZ", "05": "AR", "06": "CA",
+    "08": "CO", "09": "CT", "10": "DE", "11": "DC", "12": "FL",
+    "13": "GA", "15": "HI", "16": "ID", "17": "IL", "18": "IN",
+    "19": "IA", "20": "KS", "21": "KY", "22": "LA", "23": "ME",
+    "24": "MD", "25": "MA", "26": "MI", "27": "MN", "28": "MS",
+    "29": "MO", "30": "MT", "31": "NE", "32": "NV", "33": "NH",
+    "34": "NJ", "35": "NM", "36": "NY", "37": "NC", "38": "ND",
+    "39": "OH", "40": "OK", "41": "OR", "42": "PA", "44": "RI",
+    "45": "SC", "46": "SD", "47": "TN", "48": "TX", "49": "UT",
+    "50": "VT", "51": "VA", "53": "WA", "54": "WV", "55": "WI",
+    "56": "WY",
+}
+
 # ---------------------------------------------------------------------------
 # Crop thresholds derived from strategy/crop-strategy/resources/2026-usa-*.md
 # ---------------------------------------------------------------------------
@@ -204,6 +218,29 @@ def _resolve_field(data_root: Path, raw_field_id: str) -> tuple[str, str, Path]:
         names = [f"{g}/{f}/{p.name}" for g, f, p in candidates]
         print(f"warning: multiple matches for '{raw_field_id}': {names}; using first", file=sys.stderr)
     return candidates[0]
+
+
+def _resolve_field_location(farm_dir: Path, field_slug: str) -> str:
+    boundary_file = farm_dir / "boundary" / "field_boundaries.geojson"
+    if not boundary_file.exists():
+        return ""
+    try:
+        import geopandas as _gpd
+        fields = _gpd.read_file(boundary_file)
+        match = fields[fields["field_id"].astype(str) == field_slug]
+        if match.empty:
+            match = fields[fields["field_id"].astype(str).str.replace("_", "-").str.lower()
+                         == field_slug.replace("_", "-").lower()]
+        if match.empty:
+            return ""
+        row = match.iloc[0]
+        county = str(row.get("county_name", "")).strip()
+        state_fips = str(row.get("state_fips", "")).strip().zfill(2)
+        state = _FIPS_TO_STATE.get(state_fips, "")
+        parts = [p for p in (state, county) if p]
+        return " — ".join(parts) if parts else ""
+    except Exception:
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -609,26 +646,32 @@ def _detect_gdd_events(
 def _build_dashboard(
     field_id: str,
     year: int,
-    crop_name: str | None,
-    weather: pd.DataFrame | None,
-    weather_gdd: pd.DataFrame | None,
-    ndvi: pd.DataFrame | None,
-    ndvi_events: list[dict],
-    precip_events: list[dict],
-    temp_events: list[dict],
-    gdd_events: list[dict],
-    thresholds: dict,
-    resource_text: str | None,
+    location_prefix: str = "",
+    crop_name: str | None = None,
+    weather: pd.DataFrame | None = None,
+    weather_gdd: pd.DataFrame | None = None,
+    ndvi: pd.DataFrame | None = None,
+    ndvi_events: list[dict] | None = None,
+    precip_events: list[dict] | None = None,
+    temp_events: list[dict] | None = None,
+    gdd_events: list[dict] | None = None,
+    thresholds: dict | None = None,
+    resource_text: str | None = None,
 ) -> plt.Figure:
+    ndvi_events = ndvi_events or []
+    precip_events = precip_events or []
+    temp_events = temp_events or []
+    gdd_events = gdd_events or []
+    thresholds = thresholds or {}
     num_panels = 4
     fig, axes = plt.subplots(
         num_panels, 1, figsize=(14, 10), sharex=True,
         gridspec_kw={"height_ratios": [1, 1, 1, 1], "hspace": 0.35},
     )
-    fig.suptitle(
-        f"Field {field_id} — {year} Growing Season",
-        fontsize=14, fontweight="bold", y=0.98,
-    )
+    title = f"Field {field_id} — {year} Growing Season"
+    if location_prefix:
+        title = f"{location_prefix} {title}"
+    fig.suptitle(title, fontsize=14, fontweight="bold", y=0.98)
 
     doy_all: list[int] = []
 
@@ -871,6 +914,8 @@ def generate_field_year_dashboard(
     grower_slug, farm_slug, field_path = _resolve_field(runtime_base, field_id)
     farm_dir = field_path.parents[1]
     farm_tables_dir = farm_dir / "derived" / "tables"
+    location = _resolve_field_location(farm_dir, field_path.name)
+    location_prefix = f"{grower_slug} — {location} |" if location else f"{grower_slug} |"
 
     print(f"grower: {grower_slug}, farm: {farm_slug}, field: {field_path.name}")
 
@@ -904,6 +949,7 @@ def generate_field_year_dashboard(
     fig = _build_dashboard(
         field_id=field_id,
         year=year,
+        location_prefix=location_prefix,
         crop_name=crop_name,
         weather=weather,
         weather_gdd=weather_gdd,
