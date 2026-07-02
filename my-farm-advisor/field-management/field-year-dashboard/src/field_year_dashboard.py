@@ -220,10 +220,10 @@ def _resolve_field(data_root: Path, raw_field_id: str) -> tuple[str, str, Path]:
     return candidates[0]
 
 
-def _resolve_field_location(farm_dir: Path, field_slug: str) -> str:
+def _resolve_field_location(farm_dir: Path, field_slug: str) -> tuple[str, str]:
     boundary_file = farm_dir / "boundary" / "field_boundaries.geojson"
     if not boundary_file.exists():
-        return ""
+        return ("", "")
     try:
         import geopandas as _gpd
         fields = _gpd.read_file(boundary_file)
@@ -232,15 +232,18 @@ def _resolve_field_location(farm_dir: Path, field_slug: str) -> str:
             match = fields[fields["field_id"].astype(str).str.replace("_", "-").str.lower()
                          == field_slug.replace("_", "-").lower()]
         if match.empty:
-            return ""
+            return ("", "")
         row = match.iloc[0]
         county = str(row.get("county_name", "")).strip()
         state_fips = str(row.get("state_fips", "")).strip().zfill(2)
+        county_fips = str(row.get("county_fips", "")).strip().zfill(3)
         state = _FIPS_TO_STATE.get(state_fips, "")
         parts = [p for p in (state, county) if p]
-        return " — ".join(parts) if parts else ""
+        location_str = " — ".join(parts) if parts else ""
+        fips = (state_fips + county_fips) if (state_fips != "00" and county_fips != "000") else ""
+        return (location_str, fips)
     except Exception:
-        return ""
+        return ("", "")
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +285,39 @@ def _load_crop_strategy_resource(
     if resource_path.exists():
         return resource_path.read_text(encoding="utf-8")
     return None
+
+
+def _load_county_maturity(
+    data_root: Path, fips: str, year: int, crop_name: str | None
+) -> dict:
+    if not fips or not crop_name:
+        return {}
+    crop_lower = crop_name.lower()
+    result: dict[str, object] = {}
+    shared_dir = data_root / "data-pipeline" / "shared"
+    try:
+        if "corn" in crop_lower:
+            parquet_path = shared_dir / "corn_maturity" / f"rm_by_fips_{year}.parquet"
+            if parquet_path.exists():
+                df = pd.read_parquet(parquet_path)
+                df["fips"] = df["fips"].astype(str).str.zfill(5)
+                match = df[df["fips"] == fips]
+                if not match.empty:
+                    result["rm"] = float(match.iloc[0]["rm_relative_maturity"])
+                    result["gdd_total"] = float(match.iloc[0].get("gdd_total_c", 0))
+        elif "soybean" in crop_lower:
+            parquet_path = shared_dir / "soybean_maturity" / f"mg_by_fips_{year}.parquet"
+            if parquet_path.exists():
+                df = pd.read_parquet(parquet_path)
+                df["fips"] = df["fips"].astype(str).str.zfill(5)
+                match = df[df["fips"] == fips]
+                if not match.empty:
+                    result["mg"] = float(match.iloc[0]["mg_optimal"])
+                    result["mg_early"] = float(match.iloc[0].get("mg_early", 0))
+                    result["mg_late"] = float(match.iloc[0].get("mg_late", 0))
+    except Exception:
+        pass
+    return result
 
 
 def _load_field_weather(field_path: Path) -> pd.DataFrame | None:
@@ -488,16 +524,41 @@ def _detect_ndvi_events(ndvi_df: pd.DataFrame) -> list[dict]:
         "label": f"Peak NDVI = {peak_row['mean_ndvi']:.2f}",
         "color": "#2e7d32",
     })
+    decline_indices: list[int] = []
     for i in range(1, len(df)):
         delta = df.iloc[i]["mean_ndvi"] - df.iloc[i - 1]["mean_ndvi"]
         if delta < -0.15:
-            d = df.iloc[i]["date"]
-            doy = d.timetuple().tm_yday if hasattr(d, "timetuple") else 0
-            events.append({
-                "doy": doy,
-                "label": "NDVI decline",
-                "color": "#c62828",
-            })
+            decline_indices.append(i)
+    if decline_indices:
+        runs: list[list[int]] = []
+        current_run = [decline_indices[0]]
+        for idx in decline_indices[1:]:
+            if idx == current_run[-1] + 1:
+                current_run.append(idx)
+            else:
+                runs.append(current_run)
+                current_run = [idx]
+        runs.append(current_run)
+        for run in runs:
+            if len(run) >= 2:
+                d_start = df.iloc[run[0] - 1]["date"]
+                d_end = df.iloc[run[-1]]["date"]
+                doy_start = d_start.timetuple().tm_yday if hasattr(d_start, "timetuple") else 0
+                doy_end = d_end.timetuple().tm_yday if hasattr(d_end, "timetuple") else 0
+                events.append({
+                    "doy": doy_start,
+                    "doy_end": doy_end,
+                    "label": "NDVI decline",
+                    "color": "#e65100",
+                })
+            else:
+                d = df.iloc[run[0]]["date"]
+                doy = d.timetuple().tm_yday if hasattr(d, "timetuple") else 0
+                events.append({
+                    "doy": doy,
+                    "label": "NDVI decline",
+                    "color": "#e65100",
+                })
     for i in range(1, len(df)):
         vals_15d = df.iloc[max(0, i - 3):i + 1]["mean_ndvi"]
         if len(vals_15d) >= 2:
@@ -544,7 +605,7 @@ def _detect_precip_events(weather: pd.DataFrame) -> list[dict]:
                     "doy": doy_start,
                     "doy_end": doy_end,
                     "label": f"Dry spell\n{dry_count} days",
-                    "color": "#bf360c",
+                    "color": "#e65100",
                 })
             dry_doy = None
             dry_last_date = None
@@ -556,7 +617,7 @@ def _detect_precip_events(weather: pd.DataFrame) -> list[dict]:
             "doy": doy_start,
             "doy_end": doy_end,
             "label": f"Dry spell\n{dry_count} days",
-            "color": "#bf360c",
+            "color": "#e65100",
         })
     return events
 
@@ -663,21 +724,24 @@ def _build_dashboard(
     gdd_events: list[dict] | None = None,
     thresholds: dict | None = None,
     resource_text: str | None = None,
+    maturity_info: dict | None = None,
 ) -> plt.Figure:
     ndvi_events = ndvi_events or []
     precip_events = precip_events or []
     temp_events = temp_events or []
     gdd_events = gdd_events or []
     thresholds = thresholds or {}
+    maturity_info = maturity_info or {}
     num_panels = 4
     fig, axes = plt.subplots(
         num_panels, 1, figsize=(14, 10), sharex=True,
-        gridspec_kw={"height_ratios": [1, 1, 1, 1], "hspace": 0.35},
+        gridspec_kw={"height_ratios": [1, 1, 1, 1], "hspace": 0.50},
     )
     title = f"Field {field_id} — {year} Growing Season"
     if location_prefix:
         title = f"{location_prefix} {title}"
     fig.suptitle(title, fontsize=14, fontweight="bold", y=0.98)
+    fig.subplots_adjust(top=0.84)
 
     subtitle_parts = []
     if crop_name:
@@ -688,7 +752,7 @@ def _build_dashboard(
     if resource_name:
         subtitle_parts.append(f"Reference: {resource_name}")
     fig.text(
-        0.5, 0.94, "  |  ".join(subtitle_parts),
+        0.5, 0.93, "  |  ".join(subtitle_parts),
         fontsize=8, ha="center", va="top",
         color="#555555",
     )
@@ -702,15 +766,19 @@ def _build_dashboard(
 
     # ---- Panel 1: NDVI ----
     ax1 = axes[0]
+    _ndvi_caption_parts: list[str] = []
     if ndvi is not None and not ndvi.empty:
         df = ndvi.sort_values("date").copy()
         df["date"] = pd.to_datetime(df["date"])
         df = df.dropna(subset=["mean_ndvi"])
         df["doy"] = df["date"].apply(_doy)
         doy_all.extend(df["doy"].tolist())
+        ndvi_cmap = plt.get_cmap("RdYlGn")
+        ndvi_norm = plt.Normalize(vmin=-0.2, vmax=1.0)
+        bar_colors = [ndvi_cmap(ndvi_norm(v)) for v in df["mean_ndvi"]]
         ax1.bar(
-            df["doy"], df["mean_ndvi"], width=1.5, color="#2e7d32",
-            alpha=0.7, edgecolor="none", zorder=2,
+            df["doy"], df["mean_ndvi"], width=1.5, color=bar_colors,
+            alpha=0.8, edgecolor="none", zorder=2,
         )
         if len(df) >= 3 and df["doy"].nunique() > 2:
             x_smooth = np.linspace(df["doy"].min(), df["doy"].max(), 200)
@@ -727,12 +795,25 @@ def _build_dashboard(
         ax1.set_ylabel("NDVI", fontsize=10)
         ax1.set_ylim(0, 1.05)
         ax1.axhline(y=0, color="gray", linewidth=0.5)
+        for ev in ndvi_events:
+            label = ev.get("label", "").replace("\n", " ")
+            if "peak" in label.lower():
+                _ndvi_caption_parts.append(label)
+            elif "green-up" in label.lower():
+                _ndvi_caption_parts.append(f"Green-up ~DOY {ev['doy']}")
+            elif "decline" in label.lower():
+                _ndvi_caption_parts.append(f"Decline ~DOY {ev['doy']}")
     else:
         ax1.text(0.5, 0.5, "No NDVI data", ha="center", va="center", transform=ax1.transAxes, fontsize=11, color="gray")
         ax1.set_ylabel("NDVI", fontsize=10)
+    ax1.set_title("NDVI Dynamics", fontsize=11, fontweight="bold", pad=18)
+    if _ndvi_caption_parts:
+        ax1.text(0.5, 1.02, " | ".join(_ndvi_caption_parts), transform=ax1.transAxes,
+                 fontsize=6.5, va="bottom", ha="center", color="#555555", family="monospace")
 
     # ---- Panel 2: Precipitation ----
     ax2 = axes[1]
+    _precip_caption_parts: list[str] = []
     if weather is not None and not weather.empty:
         df = weather.sort_values("date").copy()
         df["doy"] = df["date"].apply(_doy)
@@ -742,6 +823,7 @@ def _build_dashboard(
             alpha=0.6, edgecolor="none", zorder=2,
         )
         df["precip_cumulative"] = df["PRECTOTCORR"].cumsum()
+        _precip_caption_parts.append(f"Total {df['precip_cumulative'].iloc[-1]:.0f} mm")
         ax2_twin = ax2.twinx()
         ax2_twin.plot(
             df["doy"], df["precip_cumulative"], color="#0d47a1",
@@ -751,12 +833,24 @@ def _build_dashboard(
         ax2_twin.tick_params(axis="y", labelsize=7, colors="#0d47a1")
         _annotate_events(ax2, precip_events)
         ax2.set_ylabel("Daily precip (mm)", fontsize=10)
+        dry_spells = [ev for ev in precip_events if "dry" in ev.get("label", "").lower()]
+        heavy_rains = [ev for ev in precip_events if "heavy" in ev.get("label", "").lower()]
+        if dry_spells:
+            spans = [f"{ev['doy']}-{ev.get('doy_end', ev['doy'])}" for ev in dry_spells]
+            _precip_caption_parts.append(f"Dry spell{'s' if len(spans) > 1 else ''} DOY {', '.join(spans)}")
+        if len(heavy_rains) > 0:
+            _precip_caption_parts.append(f"{len(heavy_rains)} heavy rain events")
     else:
         ax2.text(0.5, 0.5, "No precipitation data", ha="center", va="center", transform=ax2.transAxes, fontsize=11, color="gray")
         ax2.set_ylabel("Daily precip (mm)", fontsize=10)
+    ax2.set_title("Daily Precipitation", fontsize=11, fontweight="bold", pad=18)
+    if _precip_caption_parts:
+        ax2.text(0.5, 1.02, " | ".join(_precip_caption_parts), transform=ax2.transAxes,
+                 fontsize=6.5, va="bottom", ha="center", color="#555555", family="monospace")
 
     # ---- Panel 3: Temperature (no cumulative line) ----
     ax3 = axes[2]
+    _temp_caption_parts: list[str] = []
     if weather is not None and not weather.empty:
         df = weather.sort_values("date").copy()
         df["doy"] = df["date"].apply(_doy)
@@ -765,7 +859,7 @@ def _build_dashboard(
         temp = df["T2M"].values
         ax3.fill_between(
             doy, 0, temp, where=(temp >= 0),
-            color="#d32f2f", alpha=0.45, zorder=2, label="Above 0°C",
+            color="#d4a017", alpha=0.45, zorder=2, label="Above 0°C",
         )
         ax3.fill_between(
             doy, 0, temp, where=(temp < 0),
@@ -775,15 +869,44 @@ def _build_dashboard(
         heat_thresh = thresholds.get("heat_threshold_c", 35.0)
         ax3.axhline(y=heat_thresh, color="#d84315", linestyle="--", linewidth=0.8, alpha=0.7)
         ax3.text(2, heat_thresh + 0.5, f"Heat threshold {heat_thresh}°C", fontsize=6, color="#d84315", alpha=0.7)
+        gdd_base_line = thresholds.get("gdd_base_c", 10.0)
+        ax3.axhline(y=gdd_base_line, color="#7b1fa2", linestyle="--", linewidth=0.8, alpha=0.7)
+        ax3.text(2, gdd_base_line + 0.5, f"GDD base {gdd_base_line}°C", fontsize=6, color="#7b1fa2", alpha=0.7)
         _annotate_events(ax3, temp_events)
         ax3.set_ylabel("Temperature (°C)", fontsize=10)
         ax3.legend(fontsize=6, loc="upper right")
+        spring_frost = None
+        fall_frost = None
+        heat_count = 0
+        for ev in temp_events:
+            label = ev.get("label", "")
+            if "spring frost" in label.lower():
+                spring_frost = ev["doy"]
+            elif "fall frost" in label.lower():
+                fall_frost = ev["doy"]
+            elif "heat" in label.lower():
+                heat_count += 1
+        if spring_frost is not None and fall_frost is not None:
+            _temp_caption_parts.append(f"Frost-free DOY {spring_frost}-{fall_frost}")
+        elif spring_frost is not None:
+            _temp_caption_parts.append(f"Last spring frost ~DOY {spring_frost}")
+        elif fall_frost is not None:
+            _temp_caption_parts.append(f"First fall frost ~DOY {fall_frost}")
+        if heat_count > 0:
+            _temp_caption_parts.append(f"{heat_count} heat stress days")
+        gdd_base = thresholds.get("gdd_base_c", 10.0)
+        _temp_caption_parts.append(f"GDD base {gdd_base}°C")
     else:
         ax3.text(0.5, 0.5, "No temperature data", ha="center", va="center", transform=ax3.transAxes, fontsize=11, color="gray")
         ax3.set_ylabel("Temperature (°C)", fontsize=10)
+    ax3.set_title("Air Temperature", fontsize=11, fontweight="bold", pad=18)
+    if _temp_caption_parts:
+        ax3.text(0.5, 1.02, " | ".join(_temp_caption_parts), transform=ax3.transAxes,
+                 fontsize=6.5, va="bottom", ha="center", color="#555555", family="monospace")
 
     # ---- Panel 4: Cumulative GDD ----
     ax4 = axes[3]
+    _gdd_caption_parts: list[str] = []
     if weather_gdd is not None and not weather_gdd.empty:
         df = weather_gdd.sort_values("date").copy()
         df["doy"] = df["date"].apply(_doy)
@@ -804,10 +927,26 @@ def _build_dashboard(
         _annotate_events(ax4, gdd_events)
         ax4.set_ylabel("Daily GDD", fontsize=10)
         ax4.set_xlabel("Day of Year", fontsize=10)
+        _gdd_caption_parts.append(f"GDD {max_cum:.0f}")
+        stages = [ev for ev in gdd_events if ev.get("label")]
+        if stages:
+            stage_str = "→".join(ev["label"] for ev in stages)
+            _gdd_caption_parts.append(stage_str)
+        if "rm" in maturity_info:
+            _gdd_caption_parts.append(f"County RM {maturity_info['rm']:.0f}")
+        if "mg" in maturity_info:
+            _gdd_caption_parts.append(f"County MG {maturity_info['mg']:.1f}")
+        resource_name = thresholds.get("resource", "")
+        if resource_name:
+            _gdd_caption_parts.append(f"Ref: {resource_name}")
     else:
         ax4.text(0.5, 0.5, "No weather data for GDD", ha="center", va="center", transform=ax4.transAxes, fontsize=11, color="gray")
         ax4.set_ylabel("Daily GDD", fontsize=10)
         ax4.set_xlabel("Day of Year", fontsize=10)
+    ax4.set_title("Cumulative Growing Degree Days", fontsize=11, fontweight="bold", pad=18)
+    if _gdd_caption_parts:
+        ax4.text(0.5, 1.02, " | ".join(_gdd_caption_parts), transform=ax4.transAxes,
+                 fontsize=6.5, va="bottom", ha="center", color="#555555", family="monospace")
 
     # ---- Shared x-axis ----
     if doy_all:
@@ -877,7 +1016,7 @@ def generate_field_year_dashboard(
     grower_slug, farm_slug, field_path = _resolve_field(runtime_base, field_id)
     farm_dir = field_path.parents[1]
     farm_tables_dir = farm_dir / "derived" / "tables"
-    location = _resolve_field_location(farm_dir, field_path.name)
+    location, fips = _resolve_field_location(farm_dir, field_path.name)
     location_prefix = f"{grower_slug} — {location} —" if location else f"{grower_slug} —"
 
     print(f"grower: {grower_slug}, farm: {farm_slug}, field: {field_path.name}")
@@ -909,6 +1048,8 @@ def generate_field_year_dashboard(
     temp_events = _detect_temp_events(weather, thresholds)
     gdd_events = _detect_gdd_events(weather_gdd, thresholds)
 
+    maturity_info = _load_county_maturity(data_root, fips, year, crop_name)
+
     fig = _build_dashboard(
         field_id=field_id,
         year=year,
@@ -923,6 +1064,7 @@ def generate_field_year_dashboard(
         gdd_events=gdd_events,
         thresholds=thresholds,
         resource_text=resource_text,
+        maturity_info=maturity_info,
     )
 
     if output_path is None:
