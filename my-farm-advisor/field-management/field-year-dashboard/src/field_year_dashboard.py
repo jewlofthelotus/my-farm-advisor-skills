@@ -528,27 +528,33 @@ def _detect_precip_events(weather: pd.DataFrame) -> list[dict]:
                 "color": "#1565c0",
             })
     dry_doy = None
+    dry_last_date = None
     dry_count = 0
     for _, row in df.iterrows():
         if row["PRECTOTCORR"] < 1.0:
             if dry_doy is None:
                 dry_doy = row["date"]
+            dry_last_date = row["date"]
             dry_count += 1
         else:
             if dry_count >= 10:
-                d = dry_doy
-                doy = d.timetuple().tm_yday if hasattr(d, "timetuple") else 0
+                doy_start = dry_doy.timetuple().tm_yday if hasattr(dry_doy, "timetuple") else 0
+                doy_end = dry_last_date.timetuple().tm_yday if hasattr(dry_last_date, "timetuple") else doy_start
                 events.append({
-                    "doy": doy,
+                    "doy": doy_start,
+                    "doy_end": doy_end,
                     "label": f"Dry spell\n{dry_count} days",
                     "color": "#bf360c",
                 })
             dry_doy = None
+            dry_last_date = None
             dry_count = 0
     if dry_count >= 10 and dry_doy is not None:
-        doy = dry_doy.timetuple().tm_yday if hasattr(dry_doy, "timetuple") else 0
+        doy_start = dry_doy.timetuple().tm_yday if hasattr(dry_doy, "timetuple") else 0
+        doy_end = dry_last_date.timetuple().tm_yday if hasattr(dry_last_date, "timetuple") else doy_start
         events.append({
-            "doy": doy,
+            "doy": doy_start,
+            "doy_end": doy_end,
             "label": f"Dry spell\n{dry_count} days",
             "color": "#bf360c",
         })
@@ -634,7 +640,7 @@ def _detect_gdd_events(
             events.append({
                 "doy": doy,
                 "label": f"{stage_name}",
-                "color": "#4a148c",
+                "color": "#2e7d32",
             })
     return events
 
@@ -673,8 +679,21 @@ def _build_dashboard(
         title = f"{location_prefix} {title}"
     fig.suptitle(title, fontsize=14, fontweight="bold", y=0.98)
 
-    doy_all: list[int] = []
+    subtitle_parts = []
+    if crop_name:
+        subtitle_parts.append(f"Crop: {crop_name}")
+    gdd_base = thresholds.get("gdd_base_c", 10)
+    subtitle_parts.append(f"GDD base: {gdd_base}°C")
+    resource_name = thresholds.get("resource")
+    if resource_name:
+        subtitle_parts.append(f"Reference: {resource_name}")
+    fig.text(
+        0.5, 0.94, "  |  ".join(subtitle_parts),
+        fontsize=8, ha="center", va="top",
+        color="#555555",
+    )
 
+    doy_all: list[int] = []
     def _doy(d):
         try:
             return pd.to_datetime(d).timetuple().tm_yday
@@ -706,7 +725,7 @@ def _build_dashboard(
                     ax1.plot(df["doy"], df["mean_ndvi"], color="#1b5e20", linewidth=1.2, alpha=0.8, zorder=3)
         _annotate_events(ax1, ndvi_events)
         ax1.set_ylabel("NDVI", fontsize=10)
-        ax1.set_ylim(-0.1, 1.05)
+        ax1.set_ylim(0, 1.05)
         ax1.axhline(y=0, color="gray", linewidth=0.5)
     else:
         ax1.text(0.5, 0.5, "No NDVI data", ha="center", va="center", transform=ax1.transAxes, fontsize=11, color="gray")
@@ -800,13 +819,7 @@ def _build_dashboard(
 
     for i in range(num_panels):
         axes[i].tick_params(axis="y", labelsize=8)
-    axes[-1].tick_params(axis="x", labelsize=8)
-
-    _add_caption_box(
-        fig, field_id, year, crop_name, thresholds,
-        ndvi_events, precip_events, temp_events, gdd_events,
-        resource_text,
-    )
+        axes[i].tick_params(axis="x", labelsize=8, labelbottom=True)
 
     return fig
 
@@ -816,74 +829,24 @@ def _annotate_events(ax, events: list[dict]):
     used_ys: dict[int, float] = {}
     for ev in events:
         doy = ev["doy"]
+        doy_end = ev.get("doy_end")
+        span_mid = doy if doy_end is None else (doy + doy_end) / 2
         offset_y = y_max * 0.05
         base_y = y_max * 0.85
-        col = used_ys.get(doy, 0) * offset_y * 2
-        used_ys[doy] = used_ys.get(doy, 0) + 1
+        col = used_ys.get(span_mid, 0) * offset_y * 2
+        used_ys[span_mid] = used_ys.get(span_mid, 0) + 1
         y_pos = base_y - col
-        ax.axvline(x=doy, color=ev["color"], linewidth=0.8, linestyle=":", alpha=0.6, zorder=1)
+        if doy_end is not None:
+            ax.axvspan(doy, doy_end, color=ev["color"], alpha=0.12, zorder=1)
+        else:
+            ax.axvline(x=doy, color=ev["color"], linewidth=0.8, linestyle=":", alpha=0.6, zorder=1)
         ax.annotate(
-            ev["label"], xy=(doy, y_pos),
+            ev["label"], xy=(span_mid, y_pos),
             fontsize=5.5, color=ev["color"],
             ha="center", va="bottom",
             bbox=dict(boxstyle="round,pad=0.15", facecolor="white", edgecolor=ev["color"], alpha=0.7, linewidth=0.5),
             zorder=5,
         )
-
-
-def _add_caption_box(
-    fig,
-    field_id: str,
-    year: int,
-    crop_name: str | None,
-    thresholds: dict,
-    ndvi_events: list[dict],
-    precip_events: list[dict],
-    temp_events: list[dict],
-    gdd_events: list[dict],
-    resource_text: str | None,
-):
-    lines: list[str] = []
-    if crop_name:
-        lines.append(f"Crop: {crop_name}")
-    gdd_base = thresholds.get("gdd_base_c", 10)
-    resource_name = thresholds.get("resource")
-    lines.append(f"GDD base: {gdd_base}°C")
-    if resource_name:
-        lines.append(f"Reference: {resource_name}")
-
-    ndvi_text = "; ".join(
-        sorted(set(e["label"] for e in ndvi_events if e["doy"] > 0))
-    )
-    precip_text = "; ".join(
-        sorted(set(e["label"] for e in precip_events if e["doy"] > 0))
-    )
-    temp_text = "; ".join(
-        sorted(set(e["label"] for e in temp_events if e["doy"] > 0))
-    )
-    gdd_text = "; ".join(
-        sorted(set(e["label"] for e in gdd_events if e["doy"] > 0))
-    )
-
-    if ndvi_text:
-        lines.append(f"NDVI: {ndvi_text}")
-    if precip_text:
-        lines.append(f"Precip: {precip_text}")
-    if temp_text:
-        lines.append(f"Temp: {temp_text}")
-    if gdd_text:
-        lines.append(f"GDD: {gdd_text}")
-
-    if not lines:
-        lines.append("No notable events detected for this season.")
-
-    full_text = "\n".join(lines)
-    fig.text(
-        0.5, 0.01, full_text,
-        fontsize=7, ha="center", va="bottom",
-        family="monospace",
-        bbox=dict(boxstyle="round,pad=0.4", facecolor="#f5f5f5", edgecolor="#bdbdbd", alpha=0.9),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -915,7 +878,7 @@ def generate_field_year_dashboard(
     farm_dir = field_path.parents[1]
     farm_tables_dir = farm_dir / "derived" / "tables"
     location = _resolve_field_location(farm_dir, field_path.name)
-    location_prefix = f"{grower_slug} — {location} |" if location else f"{grower_slug} |"
+    location_prefix = f"{grower_slug} — {location} —" if location else f"{grower_slug} —"
 
     print(f"grower: {grower_slug}, farm: {farm_slug}, field: {field_path.name}")
 
