@@ -1,6 +1,6 @@
 ---
 name: field-year-dashboard
-description: Generate a single multi-panel dashboard image for one field and growing season. Four vertically stacked panels (NDVI, precipitation, temperature, cumulative GDD) each have a descriptive title and per-panel caption summarizing significant events. Panels share a common DOY axis with event annotations and maturity-by-FIPS crop context.
+description: Generate a single multi-panel dashboard image for one field and growing season. Four vertically stacked panels (NDVI, precipitation, temperature, cumulative GDD) each with a descriptive title. Panels share a common DOY axis with event annotations and maturity-by-FIPS crop context.
 license: MIT
 compatibility: Requires Python 3.10+, pandas, numpy, matplotlib. Optional rasterio for NDVI TIFF reading.
 metadata:
@@ -43,19 +43,15 @@ A single PNG saved to `{field}/derived/reports/{year}_field_dashboard.png`.
   Field {id} — {year} Growing Season                  ← suptitle
   ┌──────────────────────────────────────────────┐
   │ NDVI Dynamics                                  │ ← panel title
-  │ Peak 0.89 (DOY 205) | Green-up DOY 140         │ ← per-panel caption
   │ ██ [bars + polynomial trend]                   │ NDVI events annotated
   ├──────────────────────────────────────────────┤
   │ Daily Precipitation                            │ ← panel title
-  │ Total 580 mm | Dry spell DOY 208-220           │ ← per-panel caption
   │ ██ [bars + cumulative]                         │ Heavy rain / dry spell labels
   ├──────────────────────────────────────────────┤
   │ Air Temperature                                │ ← panel title
-  │ Frost-free DOY 115-285 | 5 heat stress days    │ ← per-panel caption
   │ ██ [fill areas + thresholds]                   │ Heat stress, frost, cool periods
   ├──────────────────────────────────────────────┤
   │ Cumulative Growing Degree Days                 │ ← panel title
-  │ GDD 1850 | V6→R1→R5→R6 | County RM 108         │ ← per-panel caption
   │ ██ [bars + cumulative]                         │ Growth stage markers
   └──────────────────────────────────────────────┘
   Day of Year (1–365)
@@ -122,19 +118,7 @@ print(f"Dashboard saved: {path}")
 - The shared x-axis spans the earliest to latest data point across all panels.
 - If a data source is missing, the panel shows a placeholder message and remaining panels still render.
 - Crop strategy resource files are read for reference only; the threshold values used in plotting are defined inline and should be updated when new resource years are added.
-- Each panel has a descriptive title and a per-panel caption summarizing the most significant detected events for that metric.
-- The GDD panel caption includes county-level maturity context (corn RM or soybean MG) loaded from maturity-by-FIPS shared parquet files when available.
-
-## Per-panel captions
-
-Each caption is composed from events detected for that panel:
-
-| Panel | Caption content | Source |
-|-------|----------------|--------|
-| NDVI | Peak NDVI value and DOY, rapid green-up date, decline date | `_detect_ndvi_events()` |
-| Precipitation | Total cumulative precipitation, dry spell DOY ranges, heavy rain event count | `_detect_precip_events()` + cumulative total |
-| Temperature | Frost-free DOY range (spring/fall frost), heat stress day count, GDD base temperature | `_detect_temp_events()` |
-| GDD | Total cumulative GDD, growth stage progression (→-separated), county RM/MG from maturity-by-FIPS, crop strategy reference filename | `_detect_gdd_events()` + maturity lookup |
+- The GDD panel includes county-level maturity context (corn RM or soybean MG) loaded from maturity-by-FIPS shared parquet files when available.
 
 ## Maturity-by-FIPS integration
 
@@ -143,10 +127,9 @@ When a field boundary GeoJSON provides state and county FIPS codes, the dashboar
 - Corn: `{DATA_PIPELINE_DATA_ROOT}/data-pipeline/shared/corn_maturity/rm_by_fips_{year}.parquet`
 - Soybean: `{DATA_PIPELINE_DATA_ROOT}/data-pipeline/shared/soybean_maturity/mg_by_fips_{year}.parquet`
 
-The RM or MG value is displayed in the GDD panel caption. If the parquet files are unavailable (e.g., maturity pipeline not yet run, or missing pyarrow engine), this section is silently omitted.
+The RM or MG value is displayed in the GDD panel. If the parquet files are unavailable (e.g., maturity pipeline not yet run, or missing pyarrow engine), this section is silently omitted.
 
 ## Crop strategy integration
 
 - GDD thresholds (base temperature, upper cap, growth stages) are derived from `strategy/crop-strategy/resources/2026-usa-{crop}.md` and defined inline in `CROP_THRESHOLDS`.
-- Growth stage labels in the GDD panel caption (e.g., `V6→R1→R5→R6` for corn) come directly from these crop-specific strategy resources.
-- The resource filename appears as a reference in the GDD panel caption (e.g., `Ref: 2026-usa-corn.md`).
+- Growth stage labels in the GDD panel (e.g., `V6→R1→R5→R6` for corn) come directly from these crop-specific strategy resources.
