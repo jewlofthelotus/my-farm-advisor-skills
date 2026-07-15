@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import geopandas as gpd
@@ -105,3 +106,95 @@ def plot_headlands_map(
         save_path.parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(save_path, dpi=200, bbox_inches="tight")
     return fig
+
+
+def _get_utm_crs(longitude: float, latitude: float) -> str:
+    """Return the EPSG code for the UTM zone containing the given coordinate."""
+    zone = math.floor((longitude + 180) / 6) + 1
+    epsg = 32600 + zone if latitude >= 0 else 32700 + zone
+    return f"EPSG:{epsg}"
+
+
+def create_headlands_ring_from_boundary(
+    boundary_gdf: gpd.GeoDataFrame,
+    width_m: float = 21.0,
+    output_dir: str | Path | None = None,
+) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
+    """Create a headlands ring from a field boundary in EPSG:4326.
+
+    Reads a field boundary (assumed EPSG:4326), reprojects to the
+    auto-detected UTM zone, calculates area metrics, creates an inward
+    buffer, derives the headlands ring, and writes both boundary and ring
+    to GeoPackage files.
+
+    Parameters
+    ----------
+    boundary_gdf : gpd.GeoDataFrame
+        Input field boundary GeoDataFrame. Should be in EPSG:4326.
+    width_m : float, optional
+        Inward buffer width in meters (default 21.0).
+    output_dir : str or Path, optional
+        Directory to write output GeoPackage files. If None, files are
+        written to the current working directory.
+
+    Returns
+    -------
+    tuple of (gpd.GeoDataFrame, gpd.GeoDataFrame)
+        (original_gdf with meters_squared and acres columns,
+         headlands_ring_gdf in EPSG:4326 with meters_squared and acres)
+    """
+    # Ensure EPSG:4326
+    original_gdf = boundary_gdf.copy()
+    if original_gdf.crs is None:
+        original_gdf.set_crs(epsg=4326, inplace=True)
+    else:
+        original_gdf = original_gdf.to_crs("EPSG:4326")
+
+    # Auto-detect UTM zone from centroid
+    centroid = original_gdf.geometry.unary_union.centroid
+    utm_crs = _get_utm_crs(centroid.x, centroid.y)
+
+    # Transform to UTM for meter-based operations
+    utm_gdf = original_gdf.to_crs(utm_crs)
+
+    # Calculate full boundary area per feature
+    utm_gdf["meters_squared"] = utm_gdf.geometry.area
+    utm_gdf["acres"] = utm_gdf["meters_squared"] * ACRES_PER_SQM
+
+    # Write attributes back to original_gdf (EPSG:4326)
+    original_gdf["meters_squared"] = utm_gdf["meters_squared"].values
+    original_gdf["acres"] = utm_gdf["acres"].values
+
+    # Create headlands ring per feature
+    rings = []
+    ring_areas_sqm = []
+    for geom in utm_gdf.geometry:
+        inner = geom.buffer(-width_m)
+        if inner.is_empty:
+            ring = geom
+        else:
+            ring = geom.difference(inner)
+        if not ring.is_empty:
+            rings.append(ring)
+            ring_areas_sqm.append(float(ring.area))
+
+    if rings:
+        headlands_gdf = gpd.GeoDataFrame(geometry=rings, crs=utm_crs)
+        headlands_gdf["meters_squared"] = ring_areas_sqm
+        headlands_gdf["acres"] = [a * ACRES_PER_SQM for a in ring_areas_sqm]
+    else:
+        headlands_gdf = gpd.GeoDataFrame(
+            {"meters_squared": [], "acres": []}, geometry=[], crs=utm_crs
+        )
+
+    # Convert headlands ring back to EPSG:4326
+    headlands_gdf = headlands_gdf.to_crs("EPSG:4326")
+
+    # Write GeoPackage files
+    out_path = Path(output_dir) if output_dir else Path(".")
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    original_gdf.to_file(out_path / "field_boundary.gpkg", driver="GPKG")
+    headlands_gdf.to_file(out_path / "headlands_ring.gpkg", driver="GPKG")
+
+    return original_gdf, headlands_gdf
