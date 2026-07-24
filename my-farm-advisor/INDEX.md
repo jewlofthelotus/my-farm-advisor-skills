@@ -9,5 +9,6 @@ Use this umbrella index to route into the major farm workflows. Start from the a
 - [Imagery](imagery/INDEX.md) - Landsat and Sentinel-2 guides
 - [Soil](soil/INDEX.md) - SSURGO, posters, and CDL
 - [Terrain](terrain/INDEX.md) - DEM source policy, elevation provenance, and terrain derivatives
+- [Row Crop Intelligence](row-crop-intelligence/INDEX.md) - grower-level operational dashboards with NDVI, soil, weather, and risk analysis
 - [Strategy](strategy/INDEX.md) - crop strategy and maturity planning
 - [Weather](weather/INDEX.md) - NASA POWER weather workflows
