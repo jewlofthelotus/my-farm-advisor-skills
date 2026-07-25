@@ -233,7 +233,18 @@ def compute_ndvi_trend(ndvi_series):
 # ---------------------------------------------------------------------------
 # Main data assembly
 # ---------------------------------------------------------------------------
-def extract_field_data(field_dir, farm_root, data_root):
+def read_crop_rotation(farm_root):
+    path = farm_root / "derived" / "tables"
+    files = list(path.glob("*crop_rotation.csv"))
+    if not files:
+        return {}
+    result = {}
+    with open(files[0]) as f:
+        for row in csv.DictReader(f):
+            result[row["field_id"]] = row.get("predicted_next_crop", "")
+    return result
+
+def extract_field_data(field_dir, farm_root, data_root, current_crop=None):
     field_json_path = field_dir / "field.json"
     field_meta = {}
     if field_json_path.exists():
@@ -246,6 +257,11 @@ def extract_field_data(field_dir, farm_root, data_root):
     weather = read_weather_csv(field_dir)
     ndvi_series = compute_scene_ndvi_time_series(field_dir, data_root)
     weather_summ = compute_weather_summaries(weather)
+
+    cdl_crops = {}
+    if yearly and "years" in yearly:
+        for y in yearly["years"]:
+            cdl_crops[str(y["year"])] = y.get("crop_name", "Unknown")
 
     area_acres = 0
     if boundary and "properties" in boundary:
@@ -282,6 +298,10 @@ def extract_field_data(field_dir, farm_root, data_root):
         "sand_pct": round(float(soil.get("avg_sand_pct", 0)), 1) if soil and soil.get("avg_sand_pct") else None,
     }
 
+    if current_crop is None and cdl_crops:
+        latest = str(date.today().year)
+        current_crop = cdl_crops.get(latest, "Unknown")
+
     field_data = {
         "id": field_id,
         "name": field_id,
@@ -299,6 +319,8 @@ def extract_field_data(field_dir, farm_root, data_root):
         "soil": soil_data,
         "weather_summary": weather_summ,
         "weather_daily": weather,
+        "cdl_crops": cdl_crops,
+        "current_crop": current_crop,
     }
     return field_data
 
@@ -346,8 +368,9 @@ def extract_all_field_data(grower_root, data_root):
         if farm_json_path.exists():
             farm_meta = json.loads(farm_json_path.read_text())
             grower_name = farm_meta.get("display_name", grower_name)
+        rotation_map = read_crop_rotation(farm_root)
         for field_dir in field_paths(farm_root):
-            fd = extract_field_data(field_dir, farm_root, data_root)
+            fd = extract_field_data(field_dir, farm_root, data_root, current_crop=rotation_map.get(field_dir.name))
             if fd["geometry"]:
                 all_fields.append(fd)
 
@@ -395,8 +418,26 @@ def build_html(data_json_str, d3_min_js):
     declining_count = data['summary']['declining_count']
 
     field_options_html = ''.join(
-        f'<option value="{f["id"]}" selected>{f["name"]}</option>'
+        f'<option value="{f["id"]}" selected>{f["name"]} ({f["id"]})</option>'
         for f in data['fields']
+    )
+
+    all_years = sorted(set(
+        y for f in data['fields']
+        for y in f.get('cdl_crops', {}).keys()
+    ))
+    default_year = str(date.today().year)
+    year_options_html = ''.join(
+        f'<option value="{y}"{" selected" if y == default_year else ""}>{y}</option>'
+        for y in all_years
+    )
+
+    all_crops = sorted(set(
+        f.get('current_crop', 'Unknown') for f in data['fields']
+    ))
+    crop_options_html = '<option value="All">All Crops</option>' + ''.join(
+        f'<option value="{c}"{" selected" if c == "Corn" else ""}>{c}</option>'
+        for c in all_crops
     )
 
     # ------------------------------------------------------------------
@@ -410,6 +451,8 @@ def build_html(data_json_str, d3_min_js):
     template = template.replace("__GENERATED_AT__", generated_at)
     template = template.replace("__DECLINING_COUNT__", str(declining_count))
     template = template.replace("__FIELD_OPTIONS__", field_options_html)
+    template = template.replace("__YEAR_OPTIONS__", year_options_html)
+    template = template.replace("__CROP_OPTIONS__", crop_options_html)
     template = template.replace("__FIELDS_JSON__", fields_json)
     template = template.replace("__SUMMARY_JSON__", summary_json)
     template = template.replace("__CONFIG_JSON__", config_json)
@@ -429,17 +472,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #f5f7fa; color: #1a1a2e; font-size: 14px; line-height: 1.5; }
 .container { max-width: 1400px; margin: 0 auto; padding: 16px; }
 .header { background: linear-gradient(135deg, #1e3a5f, #2a5a7f); color: #fff; padding: 20px 24px; border-radius: 8px; margin-bottom: 16px; }
+.header .header-main { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
 .header h1 { font-size: 1.4rem; font-weight: 600; }
 .header .subtitle { font-size: 0.85rem; color: #b8d4e8; margin-top: 4px; }
 .header .freshness { font-size: 0.75rem; color: #8899aa; margin-top: 8px; }
-
-.filter-bar { background: #fff; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
-.filter-bar label { font-size: 0.8rem; font-weight: 600; color: #555; }
-.filter-bar select, .filter-bar input { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85rem; }
-.filter-bar select[multiple] { min-width: 200px; min-height: 80px; }
-.filter-bar button { padding: 6px 16px; background: #4A7FB5; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: 500; }
-.filter-bar button:hover { background: #3a6fa5; }
-.filter-bar .date-range { display: flex; gap: 8px; align-items: center; }
+.header .header-filters { display: flex; gap: 14px; align-items: flex-start; flex-shrink: 0; }
+.header .header-filters .filter-group { display: flex; flex-direction: column; gap: 3px; }
+.header .header-filters .filter-group label { font-size: 0.7rem; font-weight: 600; color: #b8d4e8; text-transform: uppercase; letter-spacing: 0.04em; }
+.header .header-filters select[multiple] { min-width: 170px; min-height: 54px; padding: 4px 6px; border: none; border-radius: 4px; font-size: 0.75rem; background: #1a2e4a; color: #e0e8f0; }
+.header .header-filters input[type="date"] { padding: 4px 8px; border: none; border-radius: 4px; font-size: 0.75rem; background: #1a2e4a; color: #e0e8f0; }
+.header .header-filters button { padding: 4px 14px; background: #4A7FB5; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.75rem; font-weight: 500; margin-top: 16px; }
+.header .header-filters button:hover { background: #3a6fa5; }
 
 .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .kpi-card { background: #fff; border-radius: 8px; padding: 16px 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
@@ -493,30 +536,38 @@ svg.icon-lg { width: 24px; height: 24px; }
 @media (max-width: 768px) {
   .chart-grid { grid-template-columns: 1fr; }
   .kpi-row { grid-template-columns: 1fr 1fr; }
-  .filter-bar { flex-direction: column; align-items: stretch; }
+  .header .header-main { flex-direction: column; }
+  .header .header-filters { flex-wrap: wrap; }
 }
 </style>
 </head>
 <body>
 <div class="container">
   <div class="header">
-    <h1>__GROWER_NAME__ — Row Crop Intelligence Dashboard</h1>
-    <div class="subtitle">Corn field health analysis · __TOTAL_FIELDS__ fields</div>
-    <div class="freshness">Generated: __GENERATED_AT__</div>
-  </div>
-
-  <div class="filter-bar">
-    <label>Fields:</label>
-    <select id="field-select" multiple>
-      __FIELD_OPTIONS__
-    </select>
-    <div class="date-range">
-      <label>From:</label>
-      <input type="date" id="date-from">
-      <label>To:</label>
-      <input type="date" id="date-to">
+    <div class="header-main">
+      <div>
+        <h1>__GROWER_NAME__ — Row Crop Intelligence Dashboard</h1>
+        <div class="subtitle">Corn field health analysis · __TOTAL_FIELDS__ fields</div>
+        <div class="freshness">Generated: __GENERATED_AT__</div>
+      </div>
+      <div class="header-filters">
+        <div class="filter-group">
+          <label>Fields:</label>
+          <select id="field-select" multiple>
+            __FIELD_OPTIONS__
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Crop:</label>
+          <select id="crop-select">__CROP_OPTIONS__</select>
+        </div>
+        <div class="filter-group">
+          <label>Year:</label>
+          <select id="year-select">__YEAR_OPTIONS__</select>
+        </div>
+        <button id="reset-btn">Reset</button>
+      </div>
     </div>
-    <button id="reset-btn">Reset</button>
   </div>
 
   <div id="kpi-row" class="kpi-row"></div>
@@ -596,27 +647,104 @@ const ICONS = {
   info: '<svg class="icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v5M8 5v1"/></svg>',
 };
 
+// ===== DATE-AWARE FIELD HELPERS =====
+function classifyRisk(ndviSeries, config) {
+  if (!ndviSeries || !ndviSeries.length) return 'unknown';
+  var latest = ndviSeries[ndviSeries.length - 1].value;
+  if (latest < config.stress_threshold) return 'critical';
+  if (latest < config.watch_threshold) return 'watch';
+  if (ndviSeries.length >= 3) {
+    var recent = ndviSeries.slice(-3);
+    var firstVal = recent[0].value;
+    if (firstVal > 0) {
+      var changePct = ((latest - firstVal) / firstVal) * 100;
+      if (changePct <= -config.ndvi_decline_critical_pct) return 'critical';
+      if (changePct <= -config.ndvi_decline_warning_pct) return 'watch';
+    }
+  }
+  return 'healthy';
+}
+
+function computeNDVITrend(ndviSeries) {
+  if (ndviSeries.length < 3) return { trend: 'stable', pct: 0 };
+  var recent = ndviSeries.slice(-3);
+  var first = recent[0].value, last = recent[recent.length - 1].value;
+  if (first === 0) return { trend: 'stable', pct: 0 };
+  var change = ((last - first) / first) * 100;
+  if (change > 3) return { trend: 'improving', pct: Math.round(change * 10) / 10 };
+  if (change < -3) return { trend: 'declining', pct: Math.round(change * 10) / 10 };
+  return { trend: 'stable', pct: Math.round(change * 10) / 10 };
+}
+
+function computeWeatherSummaries(weatherRecords, config) {
+  if (!weatherRecords || !weatherRecords.length) return { gdd_accumulated: 0, days_since_significant_rain: null };
+  var significantMm = config.precip_significant_mm || 2.54;
+  var gddTotal = 0;
+  weatherRecords.forEach(function(d) {
+    gddTotal += Math.max(0, (d.T2M_MAX + d.T2M_MIN) / 2 - 10);
+  });
+  var sorted = weatherRecords.slice().sort(function(a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  var lastDate = sorted.length ? sorted[sorted.length - 1].date : null;
+  var recentRain = sorted.filter(function(d) { return d.PRECTOTCORR >= significantMm; });
+  var daysSince = null;
+  if (recentRain.length && lastDate) {
+    var lastRain = recentRain[recentRain.length - 1].date;
+    daysSince = Math.round((new Date(lastDate) - new Date(lastRain)) / 86400000);
+  }
+  return { gdd_accumulated: Math.round(gddTotal), days_since_significant_rain: daysSince };
+}
+
 // ===== STATE (pub/sub) =====
 const state = {
   fields: ALL_FIELDS,
-  filters: { fieldIds: [], dateFrom: null, dateTo: null },
+  filters: { fieldIds: [], selectedYear: '2026', cropName: 'Corn' },
   _listeners: [],
   subscribe(fn) { this._listeners.push(fn); return () => { this._listeners = this._listeners.filter(l => l !== fn); }; },
   publish() { this._listeners.forEach(fn => fn()); },
-  getFilteredFields() {
-    let ff = this.fields;
-    if (this.filters.fieldIds.length > 0) {
-      ff = ff.filter(f => this.filters.fieldIds.includes(f.id));
+  getFilteredWeather(field) {
+    var data = field.weather_daily || [];
+    if (this.filters.selectedYear) {
+      data = data.filter(function(d) { return d.date.startsWith(this.filters.selectedYear); }.bind(this));
     }
-    return ff;
+    return data;
+  },
+  getFilteredFields() {
+    var ff = this.fields;
+    if (this.filters.fieldIds.length > 0) {
+      ff = ff.filter(function(f) { return this.filters.fieldIds.includes(f.id); }.bind(this));
+    }
+    if (this.filters.cropName && this.filters.cropName !== 'All') {
+      ff = ff.filter(function(f) {
+        var y = this.filters.selectedYear;
+        var crop = f.cdl_crops && f.cdl_crops[y] && f.cdl_crops[y] !== 'Unknown'
+          ? f.cdl_crops[y]
+          : f.current_crop;
+        return crop === this.filters.cropName;
+      }.bind(this));
+    }
+    var self = this;
+    return ff.map(function(f) {
+      var ndviSeries = self.getFilteredNDVISeries(f);
+      var weatherData = self.getFilteredWeather(f);
+      var risk = classifyRisk(ndviSeries, CONFIG);
+      var trend = computeNDVITrend(ndviSeries);
+      var lastNDVI = ndviSeries.length ? ndviSeries[ndviSeries.length - 1].value : null;
+      var weatherSumm = computeWeatherSummaries(weatherData, CONFIG);
+      return Object.assign({}, f, {
+        current_ndvi: lastNDVI,
+        current_risk: risk,
+        ndvi_trend: trend.trend,
+        ndvi_trend_pct: trend.pct,
+        weather_summary: Object.assign({}, f.weather_summary, weatherSumm),
+        ndvi_series: ndviSeries,
+        weather_daily: weatherData,
+      });
+    });
   },
   getFilteredNDVISeries(field) {
-    let series = field.ndvi_series;
-    if (this.filters.dateFrom) {
-      series = series.filter(d => d.date >= this.filters.dateFrom);
-    }
-    if (this.filters.dateTo) {
-      series = series.filter(d => d.date <= this.filters.dateTo);
+    var series = field.ndvi_series;
+    if (this.filters.selectedYear) {
+      series = series.filter(function(d) { return d.date.startsWith(this.filters.selectedYear); }.bind(this));
     }
     return series;
   }
@@ -693,7 +821,7 @@ function renderNDVITimeSeries() {
 
   let allPoints = [];
   ff.forEach(f => {
-    const series = state.getFilteredNDVISeries(f);
+    const series = f.ndvi_series;
     series.forEach(p => allPoints.push(Object.assign({}, p, { fieldId: f.id, fieldName: f.name })));
   });
   if (!allPoints.length) return;
@@ -742,7 +870,7 @@ function renderNDVITimeSeries() {
     .curve(d3.curveLinear);
 
   ff.forEach(f => {
-    const series = state.getFilteredNDVISeries(f);
+    const series = f.ndvi_series;
     if (series.length < 2) return;
     svg.append("path")
       .datum(series)
@@ -960,7 +1088,7 @@ function renderGDD() {
   const ff = state.getFilteredFields();
   if (!ff.length) return;
 
-  const currentYear = new Date().getFullYear();
+  const displayYear = state.filters.selectedYear || String(new Date().getFullYear());
   const fieldData = ff.map(f => {
     const daily = f.weather_daily || [];
     const byDate = {};
@@ -973,8 +1101,8 @@ function renderGDD() {
     const currentSeries = [];
     sorted.forEach(([dt, val]) => {
       cum += val;
-      const y = parseInt(dt.slice(0, 4));
-      if (y === currentYear) {
+      const y = dt.slice(0, 4);
+      if (y === displayYear) {
         currentSeries.push({ date: dt, gdd: Math.round(cum) });
       }
     });
@@ -1115,7 +1243,7 @@ function renderActionList() {
     html += '<div class="action-item">' +
       '<span class="risk-badge" style="background:' + tl.color + '">' + tl.label + '</span>' +
       '<span class="risk-text">' +
-        '<strong>' + f.name + '</strong>: ' + ndviInfo + trendInfo + ' &middot; ' + soilInfo + '<br>' +
+        '<strong>' + f.id + '</strong>: ' + ndviInfo + trendInfo + ' &middot; ' + soilInfo + '<br>' +
         '<span style="color:#777; font-size:0.8rem;">' + action + '</span>' +
       '</span>' +
     '</div>';
@@ -1212,11 +1340,11 @@ function renderFooter() {
 // ===== RESET =====
 function resetFilters() {
   state.filters.fieldIds = [];
-  state.filters.dateFrom = null;
-  state.filters.dateTo = null;
+  state.filters.selectedYear = '2026';
+  state.filters.cropName = 'Corn';
   document.querySelectorAll("#field-select option").forEach(opt => opt.selected = true);
-  document.getElementById("date-from").value = '';
-  document.getElementById("date-to").value = '';
+  document.getElementById("year-select").value = '2026';
+  document.getElementById("crop-select").value = 'Corn';
   state.publish();
 }
 
@@ -1244,23 +1372,15 @@ document.getElementById("field-select").addEventListener("change", function() {
   state.publish();
 });
 
-document.getElementById("date-from").addEventListener("change", function() {
-  state.filters.dateFrom = this.value || null;
+document.getElementById("year-select").addEventListener("change", function() {
+  state.filters.selectedYear = this.value;
   state.publish();
 });
 
-document.getElementById("date-to").addEventListener("change", function() {
-  state.filters.dateTo = this.value || null;
+document.getElementById("crop-select").addEventListener("change", function() {
+  state.filters.cropName = this.value;
   state.publish();
 });
-
-const allDates = ALL_FIELDS.flatMap(f => f.ndvi_series.map(d => d.date)).sort();
-if (allDates.length) {
-  document.getElementById("date-from").value = allDates[0];
-  document.getElementById("date-to").value = allDates[allDates.length - 1];
-  state.filters.dateFrom = allDates[0];
-  state.filters.dateTo = allDates[allDates.length - 1];
-}
 
 renderAll();
 </script>
