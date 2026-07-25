@@ -453,8 +453,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 .header .header-filters { display: flex; gap: 14px; align-items: flex-start; flex-shrink: 0; }
 .header .header-filters .filter-group { display: flex; flex-direction: column; gap: 3px; }
 .header .header-filters .filter-group label { font-size: 0.7rem; font-weight: 600; color: #b8d4e8; text-transform: uppercase; letter-spacing: 0.04em; }
-.header .header-filters select[multiple] { min-width: 170px; min-height: 54px; padding: 4px 6px; border: none; border-radius: 4px; font-size: 0.75rem; background: #1a2e4a; color: #e0e8f0; }
-.header .header-filters input[type="date"] { padding: 4px 8px; border: none; border-radius: 4px; font-size: 0.75rem; background: #1a2e4a; color: #e0e8f0; }
+.header .header-filters select { padding: 4px 8px; border: none; border-radius: 4px; font-size: 0.75rem; background: #1a2e4a; color: #e0e8f0; min-width: 170px; }
+.header .grower-name { color: #F5D76E; }
 .header .header-filters button { padding: 4px 14px; background: #4A7FB5; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.75rem; font-weight: 500; margin-top: 16px; }
 .header .header-filters button:hover { background: #3a6fa5; }
 
@@ -520,14 +520,13 @@ svg.icon-lg { width: 24px; height: 24px; }
   <div class="header">
     <div class="header-main">
       <div>
-        <h1>__GROWER_NAME__ — Row Crop Intelligence Dashboard</h1>
-        <div class="subtitle">Corn field health analysis · __TOTAL_FIELDS__ fields</div>
+        <h1><span class="grower-name">__GROWER_NAME__</span> - Corn Health Intelligence Dashboard</h1>
         <div class="freshness">Generated: __GENERATED_AT__</div>
       </div>
       <div class="header-filters">
         <div class="filter-group">
           <label>Fields:</label>
-          <select id="field-select" multiple></select>
+          <select id="field-select"></select>
         </div>
         <div class="filter-group">
           <label>Year:</label>
@@ -685,6 +684,8 @@ const state = {
   },
   getFilteredFields() {
     var ff = this.fields;
+    var year = this.filters.selectedYear;
+    ff = ff.filter(function(f) { return isFieldCorn(f, year); });
     if (this.filters.fieldIds.length > 0) {
       ff = ff.filter(function(f) { return this.filters.fieldIds.includes(f.id); }.bind(this));
     }
@@ -719,22 +720,21 @@ const state = {
 // ===== SYNC FILTERS =====
 function syncFilters() {
   var year = state.filters.selectedYear;
-  var selectedIds = state.filters.fieldIds;
+  var selectedId = state.filters.fieldIds.length === 1 ? state.filters.fieldIds[0] : null;
 
   var cornFields = ALL_FIELDS.filter(function(f) { return isFieldCorn(f, year); });
   var validIds = cornFields.map(function(f) { return f.id; });
-  var keptIds = selectedIds.filter(function(id) { return validIds.includes(id); });
-  if (keptIds.length !== selectedIds.length) {
-    state.filters.fieldIds = keptIds;
-    selectedIds = keptIds;
+  if (selectedId && !validIds.includes(selectedId)) {
+    state.filters.fieldIds = [];
+    selectedId = null;
   }
   var fieldSelect = document.getElementById("field-select");
-  fieldSelect.innerHTML = cornFields.map(function(f) {
-    var sel = selectedIds.includes(f.id);
+  fieldSelect.innerHTML = '<option value="">All Corn Fields</option>' + cornFields.map(function(f) {
+    var sel = f.id === selectedId;
     return '<option value="' + f.id + '"' + (sel ? ' selected' : '') + '>' + f.name + ' (' + f.id + ')</option>';
   }).join('');
 
-  var refIds = selectedIds.length > 0 ? selectedIds : ALL_FIELDS.map(function(f) { return f.id; });
+  var refIds = selectedId ? [selectedId] : validIds;
   var allYears = Object.keys(ALL_FIELDS[0] && ALL_FIELDS[0].cdl_crops || {}).sort();
   var validYears = allYears.filter(function(y) {
     return refIds.some(function(id) {
@@ -1369,7 +1369,7 @@ state.subscribe(renderAll);
 document.getElementById("reset-btn").addEventListener("click", resetFilters);
 
 document.getElementById("field-select").addEventListener("change", function() {
-  state.filters.fieldIds = Array.from(this.selectedOptions).map(o => o.value);
+  state.filters.fieldIds = this.value ? [this.value] : [];
   syncFilters();
 });
 
