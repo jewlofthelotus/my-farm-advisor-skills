@@ -417,29 +417,6 @@ def build_html(data_json_str, d3_min_js):
     generated_at = data['summary']['generated_at']
     declining_count = data['summary']['declining_count']
 
-    field_options_html = ''.join(
-        f'<option value="{f["id"]}" selected>{f["name"]} ({f["id"]})</option>'
-        for f in data['fields']
-    )
-
-    all_years = sorted(set(
-        y for f in data['fields']
-        for y in f.get('cdl_crops', {}).keys()
-    ))
-    default_year = str(date.today().year)
-    year_options_html = ''.join(
-        f'<option value="{y}"{" selected" if y == default_year else ""}>{y}</option>'
-        for y in all_years
-    )
-
-    all_crops = sorted(set(
-        f.get('current_crop', 'Unknown') for f in data['fields']
-    ))
-    crop_options_html = '<option value="All">All Crops</option>' + ''.join(
-        f'<option value="{c}"{" selected" if c == "Corn" else ""}>{c}</option>'
-        for c in all_crops
-    )
-
     # ------------------------------------------------------------------
     # Build the HTML using a regular string with .replace() substitutions.
     # This avoids Python f-string / JavaScript brace conflicts.
@@ -450,9 +427,6 @@ def build_html(data_json_str, d3_min_js):
     template = template.replace("__TOTAL_FIELDS__", str(total_fields))
     template = template.replace("__GENERATED_AT__", generated_at)
     template = template.replace("__DECLINING_COUNT__", str(declining_count))
-    template = template.replace("__FIELD_OPTIONS__", field_options_html)
-    template = template.replace("__YEAR_OPTIONS__", year_options_html)
-    template = template.replace("__CROP_OPTIONS__", crop_options_html)
     template = template.replace("__FIELDS_JSON__", fields_json)
     template = template.replace("__SUMMARY_JSON__", summary_json)
     template = template.replace("__CONFIG_JSON__", config_json)
@@ -553,17 +527,11 @@ svg.icon-lg { width: 24px; height: 24px; }
       <div class="header-filters">
         <div class="filter-group">
           <label>Fields:</label>
-          <select id="field-select" multiple>
-            __FIELD_OPTIONS__
-          </select>
-        </div>
-        <div class="filter-group">
-          <label>Crop:</label>
-          <select id="crop-select">__CROP_OPTIONS__</select>
+          <select id="field-select" multiple></select>
         </div>
         <div class="filter-group">
           <label>Year:</label>
-          <select id="year-select">__YEAR_OPTIONS__</select>
+          <select id="year-select"></select>
         </div>
         <button id="reset-btn">Reset</button>
       </div>
@@ -695,9 +663,16 @@ function computeWeatherSummaries(weatherRecords, config) {
 }
 
 // ===== STATE (pub/sub) =====
+function isFieldCorn(field, year) {
+  var crop = field.cdl_crops && field.cdl_crops[year] && field.cdl_crops[year] !== 'Unknown'
+    ? field.cdl_crops[year]
+    : field.current_crop;
+  return crop === 'Corn';
+}
+
 const state = {
   fields: ALL_FIELDS,
-  filters: { fieldIds: [], selectedYear: '2026', cropName: 'Corn' },
+  filters: { fieldIds: [], selectedYear: '2026' },
   _listeners: [],
   subscribe(fn) { this._listeners.push(fn); return () => { this._listeners = this._listeners.filter(l => l !== fn); }; },
   publish() { this._listeners.forEach(fn => fn()); },
@@ -712,15 +687,6 @@ const state = {
     var ff = this.fields;
     if (this.filters.fieldIds.length > 0) {
       ff = ff.filter(function(f) { return this.filters.fieldIds.includes(f.id); }.bind(this));
-    }
-    if (this.filters.cropName && this.filters.cropName !== 'All') {
-      ff = ff.filter(function(f) {
-        var y = this.filters.selectedYear;
-        var crop = f.cdl_crops && f.cdl_crops[y] && f.cdl_crops[y] !== 'Unknown'
-          ? f.cdl_crops[y]
-          : f.current_crop;
-        return crop === this.filters.cropName;
-      }.bind(this));
     }
     var self = this;
     return ff.map(function(f) {
@@ -749,6 +715,46 @@ const state = {
     return series;
   }
 };
+
+// ===== SYNC FILTERS =====
+function syncFilters() {
+  var year = state.filters.selectedYear;
+  var selectedIds = state.filters.fieldIds;
+
+  var cornFields = ALL_FIELDS.filter(function(f) { return isFieldCorn(f, year); });
+  var validIds = cornFields.map(function(f) { return f.id; });
+  var keptIds = selectedIds.filter(function(id) { return validIds.includes(id); });
+  if (keptIds.length !== selectedIds.length) {
+    state.filters.fieldIds = keptIds;
+    selectedIds = keptIds;
+  }
+  var fieldSelect = document.getElementById("field-select");
+  fieldSelect.innerHTML = cornFields.map(function(f) {
+    var sel = selectedIds.includes(f.id);
+    return '<option value="' + f.id + '"' + (sel ? ' selected' : '') + '>' + f.name + ' (' + f.id + ')</option>';
+  }).join('');
+
+  var refIds = selectedIds.length > 0 ? selectedIds : ALL_FIELDS.map(function(f) { return f.id; });
+  var allYears = Object.keys(ALL_FIELDS[0] && ALL_FIELDS[0].cdl_crops || {}).sort();
+  var validYears = allYears.filter(function(y) {
+    return refIds.some(function(id) {
+      var f = ALL_FIELDS.find(function(fi) { return fi.id === id; });
+      return f && isFieldCorn(f, y);
+    });
+  });
+  if (!validYears.includes(year) && validYears.length > 0) {
+    state.filters.selectedYear = validYears[validYears.length - 1];
+  } else if (validYears.length === 0) {
+    state.filters.selectedYear = '2026';
+  }
+  var yearSelect = document.getElementById("year-select");
+  yearSelect.innerHTML = validYears.map(function(y) {
+    var sel = y === state.filters.selectedYear;
+    return '<option value="' + y + '"' + (sel ? ' selected' : '') + '>' + y + '</option>';
+  }).join('');
+
+  state.publish();
+}
 
 // ===== TOOLTIP =====
 const tooltip = d3.select("#tooltip");
@@ -1067,8 +1073,7 @@ function renderMap() {
       })
       .on("click", function() {
         state.filters.fieldIds = [f.id];
-        document.querySelectorAll("#field-select option").forEach(opt => opt.selected = opt.value === f.id);
-        state.publish();
+        syncFilters();
       });
   });
 
@@ -1341,11 +1346,7 @@ function renderFooter() {
 function resetFilters() {
   state.filters.fieldIds = [];
   state.filters.selectedYear = '2026';
-  state.filters.cropName = 'Corn';
-  document.querySelectorAll("#field-select option").forEach(opt => opt.selected = true);
-  document.getElementById("year-select").value = '2026';
-  document.getElementById("crop-select").value = 'Corn';
-  state.publish();
+  syncFilters();
 }
 
 // ===== RENDER ALL =====
@@ -1369,20 +1370,15 @@ document.getElementById("reset-btn").addEventListener("click", resetFilters);
 
 document.getElementById("field-select").addEventListener("change", function() {
   state.filters.fieldIds = Array.from(this.selectedOptions).map(o => o.value);
-  state.publish();
+  syncFilters();
 });
 
 document.getElementById("year-select").addEventListener("change", function() {
   state.filters.selectedYear = this.value;
-  state.publish();
+  syncFilters();
 });
 
-document.getElementById("crop-select").addEventListener("change", function() {
-  state.filters.cropName = this.value;
-  state.publish();
-});
-
-renderAll();
+syncFilters();
 </script>
 </body>
 </html>"""
