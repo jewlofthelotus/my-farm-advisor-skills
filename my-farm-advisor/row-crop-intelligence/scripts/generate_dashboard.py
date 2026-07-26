@@ -2,6 +2,7 @@
 """Generate a self-contained Row Crop Intelligence & Data Dashboard HTML for a grower."""
 
 import argparse
+import base64
 import csv
 import gzip
 import io
@@ -402,6 +403,49 @@ def download_d3():
         return local_d3.read_text()
     raise RuntimeError("Could not download D3 from any CDN and no local fallback found")
 
+def compute_all_fields_bbox(fields):
+    """Compute [min_lon, min_lat, max_lon, max_lat] across all fields."""
+    all_lons, all_lats = [], []
+    for f in fields:
+        geo = f.get("geometry", {}).get("geometry")
+        if not geo:
+            continue
+        coords = geo.get("coordinates", [])
+        if geo["type"] == "Polygon":
+            for c in coords[0]:
+                all_lons.append(c[0])
+                all_lats.append(c[1])
+        elif geo["type"] == "MultiPolygon":
+            for poly in coords:
+                for c in poly[0]:
+                    all_lons.append(c[0])
+                    all_lats.append(c[1])
+    if not all_lons:
+        return [-88.5, 40.5, -87.5, 41.5]
+    return [min(all_lons), min(all_lats), max(all_lons), max(all_lats)]
+
+def fetch_static_map(bbox, size=(1000, 700)):
+    """Fetch ESRI World Imagery for the given WGS84 bbox, return base64 data URI."""
+    min_lon, min_lat, max_lon, max_lat = bbox
+    pad_lon = max((max_lon - min_lon) * 0.15, 0.005)
+    pad_lat = max((max_lat - min_lat) * 0.15, 0.005)
+    url = (
+        f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
+        f"?bbox={min_lon-pad_lon},{min_lat-pad_lat},{max_lon+pad_lon},{max_lat+pad_lat}"
+        f"&bboxSR=4326&size={size[0]},{size[1]}&imageSR=102100"
+        f"&format=png32&transparent=true&f=image"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = resp.read()
+            b64 = base64.b64encode(data).decode("ascii")
+            print(f"  Static map fetched: {len(data) / 1024:.0f} KB")
+            return f"data:image/png;base64,{b64}"
+    except Exception as e:
+        print(f"  Warning: could not fetch static map ({e})")
+        return ""
+
 def build_html(data_json_str, d3_min_js):
     config = CROP_CONFIG["corn"]
     data = json.loads(data_json_str)
@@ -416,6 +460,11 @@ def build_html(data_json_str, d3_min_js):
     total_fields = data['summary']['total_fields']
     generated_at = data['summary']['generated_at']
     declining_count = data['summary']['declining_count']
+
+    # Compute all-field bounding box and fetch static basemap
+    bbox = compute_all_fields_bbox(data['fields'])
+    map_b64 = fetch_static_map(bbox)
+    map_bbox_json = json.dumps(bbox)
 
     # ------------------------------------------------------------------
     # Build the HTML using a regular string with .replace() substitutions.
@@ -432,6 +481,8 @@ def build_html(data_json_str, d3_min_js):
     template = template.replace("__CONFIG_JSON__", config_json)
     template = template.replace("__THRESHOLD_LABELS_JSON__", threshold_labels_json)
     template = template.replace("__CROP_CONFIG_JSON__", crop_config_json)
+    template = template.replace("__MAP_BASE64__", map_b64)
+    template = template.replace("__MAP_BBOX__", map_bbox_json)
     return template
 
 
@@ -612,6 +663,8 @@ const CONFIG = CROP_CONFIG.corn;
 const THRESHOLD_LABELS = __THRESHOLD_LABELS_JSON__;
 const ALL_FIELDS = __FIELDS_JSON__;
 const SUMMARY = __SUMMARY_JSON__;
+const MAP_BASE64 = '__MAP_BASE64__';
+const MAP_BBOX = __MAP_BBOX__;
 
 // ===== ICONS =====
 const ICONS = {
@@ -1128,8 +1181,26 @@ function renderMap() {
 
   var geoPath = d3.geoPath().projection(projection);
 
-  // Background fill
-  mapGroup.append("rect")
+  // Static basemap (ESRI World Imagery, fetched at build time)
+  if (MAP_BASE64) {
+    var imgPad = 0.15;
+    var imgMinLon = MAP_BBOX[0], imgMinLat = MAP_BBOX[1];
+    var imgMaxLon = MAP_BBOX[2], imgMaxLat = MAP_BBOX[3];
+    var ipl = (imgMaxLon - imgMinLon) * imgPad || 0.005;
+    var ipa = (imgMaxLat - imgMinLat) * imgPad || 0.005;
+    var tl = projection([imgMinLon - ipl, imgMaxLat + ipa]);
+    var br = projection([imgMaxLon + ipl, imgMinLat - ipa]);
+    if (tl && br) {
+      mapGroup.insert("image", ":first-child")
+        .attr("x", tl[0]).attr("y", tl[1])
+        .attr("width", br[0] - tl[0]).attr("height", br[1] - tl[1])
+        .attr("href", MAP_BASE64)
+        .attr("opacity", 0.7);
+    }
+  }
+
+  // Background fill (fallback behind basemap)
+  mapGroup.insert("rect", ":first-child")
     .attr("x", 0).attr("y", 0).attr("width", width).attr("height", height)
     .attr("fill", "#e8f0f8");
 
