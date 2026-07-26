@@ -4,6 +4,7 @@
 import argparse
 import base64
 import csv
+import math
 import gzip
 import io
 import json
@@ -424,15 +425,25 @@ def compute_all_fields_bbox(fields):
         return [-88.5, 40.5, -87.5, 41.5]
     return [min(all_lons), min(all_lats), max(all_lons), max(all_lats)]
 
-def fetch_static_map(bbox, size=(1000, 700)):
+def _merc(lon, lat):
+    r = 6378137
+    return (math.radians(lon) * r, math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)) * r)
+
+def fetch_static_map(bbox):
     """Fetch ESRI World Imagery for the given WGS84 bbox, return base64 data URI."""
     min_lon, min_lat, max_lon, max_lat = bbox
     pad_lon = max((max_lon - min_lon) * 0.15, 0.005)
     pad_lat = max((max_lat - min_lat) * 0.15, 0.005)
+    pl, pb, pr, pt = min_lon - pad_lon, min_lat - pad_lat, max_lon + pad_lon, max_lat + pad_lat
+    mx1, my1 = _merc(pl, pb)
+    mx2, my2 = _merc(pr, pt)
+    mw, mh = mx2 - mx1, my2 - my1
+    target_w = 800
+    target_h = max(1, int(target_w * mh / mw))
     url = (
         f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
-        f"?bbox={min_lon-pad_lon},{min_lat-pad_lat},{max_lon+pad_lon},{max_lat+pad_lat}"
-        f"&bboxSR=4326&size={size[0]},{size[1]}&imageSR=102100"
+        f"?bbox={pl},{pb},{pr},{pt}"
+        f"&bboxSR=4326&size={target_w},{target_h}&imageSR=102100"
         f"&format=png32&transparent=true&f=image"
     )
     try:
