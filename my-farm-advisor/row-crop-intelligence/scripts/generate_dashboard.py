@@ -1215,37 +1215,6 @@ function renderMap() {
     .attr("x", 0).attr("y", 0).attr("width", width).attr("height", height)
     .attr("fill", "#e8f0f8");
 
-  // Bounding box outline
-  var bbox = geoPath.bounds(geoBounds);
-  mapGroup.append("rect")
-    .attr("x", bbox[0][0]).attr("y", bbox[0][1])
-    .attr("width", bbox[1][0] - bbox[0][0]).attr("height", bbox[1][1] - bbox[0][1])
-    .attr("fill", "none").attr("stroke", "#b0c8d8").attr("stroke-width", 1.5)
-    .attr("stroke-dasharray", "6,3");
-
-  // Subtle graticule
-  var padLon = (maxLon - minLon) * 0.3 || 0.05;
-  var padLat = (maxLat - minLat) * 0.3 || 0.05;
-  var step = 0.005;
-  for (var lon = Math.floor((minLon - padLon) / step) * step; lon <= maxLon + padLon; lon += step) {
-    var p1 = projection([lon, minLat - padLat]);
-    var p2 = projection([lon, maxLat + padLat]);
-    if (p1 && p2) {
-      mapGroup.append("line")
-        .attr("x1", p1[0]).attr("y1", p1[1]).attr("x2", p2[0]).attr("y2", p2[1])
-        .attr("stroke", "#d8e4ec").attr("stroke-width", 0.5);
-    }
-  }
-  for (var lat = Math.floor((minLat - padLat) / step) * step; lat <= maxLat + padLat; lat += step) {
-    var p1 = projection([minLon - padLon, lat]);
-    var p2 = projection([maxLon + padLon, lat]);
-    if (p1 && p2) {
-      mapGroup.append("line")
-        .attr("x1", p1[0]).attr("y1", p1[1]).attr("x2", p2[0]).attr("y2", p2[1])
-        .attr("stroke", "#d8e4ec").attr("stroke-width", 0.5);
-    }
-  }
-
   // Field paths
   ff.forEach(function(f) {
     var color = THRESHOLD_LABELS[f.current_risk]?.color || "#999";
