@@ -663,6 +663,24 @@ function computeWeatherSummaries(weatherRecords, config) {
   return { gdd_accumulated: Math.round(gddTotal), days_since_significant_rain: daysSince, total_precip_mm: Math.round(precipTotal) };
 }
 
+function computeStressDuration(ndviSeries, config) {
+  if (!ndviSeries || ndviSeries.length < 2) return 0;
+  var total = 0, inStress = false, start = null;
+  ndviSeries.forEach(function(d) {
+    var stressed = d.value < config.watch_threshold;
+    if (stressed && !inStress) { start = d.date; inStress = true; }
+    else if (!stressed && inStress) {
+      total += Math.round((new Date(d.date) - new Date(start)) / 86400000);
+      inStress = false;
+    }
+  });
+  if (inStress && start) {
+    var last = ndviSeries[ndviSeries.length - 1].date;
+    total += Math.round((new Date(last) - new Date(start)) / 86400000);
+  }
+  return total;
+}
+
 // ===== STATE (pub/sub) =====
 function isFieldCorn(field, year) {
   var crop = field.cdl_crops && field.cdl_crops[year] && field.cdl_crops[year] !== 'Unknown'
@@ -781,6 +799,7 @@ function renderKPIs() {
   const avgGDD = gddVals.length ? Math.round(gddVals.reduce((a,b) => a+b, 0) / gddVals.length) : 0;
 
   var extraCards = '';
+  var firstCardHtml;
   if (isCurrent) {
     const critical = ff.filter(f => f.current_risk === 'critical').length;
     const watch = ff.filter(f => f.current_risk === 'watch').length;
@@ -789,6 +808,13 @@ function renderKPIs() {
 
     const rainDays = ff.map(f => f.weather_summary?.days_since_significant_rain).filter(d => d != null);
     const maxRainDays = rainDays.length ? Math.max(...rainDays) : '--';
+
+    firstCardHtml =
+      '<div class="kpi-card healthy">' +
+        '<div class="kpi-label">' + ICONS.plant + ' Average NDVI</div>' +
+        '<div class="kpi-value">' + avgNDVI + ' <span class="kpi-unit"></span></div>' +
+        '<div class="kpi-trend">' + trendIcon + ' ' + trendText + '</div>' +
+      '</div>';
 
     extraCards =
       '<div class="kpi-card ' + riskClass + '">' +
@@ -802,23 +828,40 @@ function renderKPIs() {
         '<div class="kpi-trend">Threshold: >0.1 in</div>' +
       '</div>';
   } else {
+    const peakNdvVals = ff.map(function(f) {
+      var s = f.ndvi_series;
+      return s && s.length ? d3.max(s, function(d) { return d.value; }) : null;
+    }).filter(function(v) { return v != null; });
+    const avgPeak = peakNdvVals.length ? (peakNdvVals.reduce(function(a,b) { return a+b; }, 0) / peakNdvVals.length).toFixed(3) : '--';
+
     const precipVals = ff.map(f => f.weather_summary?.total_precip_mm || 0);
     const avgPrecipIn = precipVals.length ? (precipVals.reduce((a,b) => a+b, 0) / precipVals.length / 25.4).toFixed(1) : '--';
+
+    const stressVals = ff.map(function(f) { return computeStressDuration(f.ndvi_series, CONFIG); });
+    const avgStress = stressVals.length ? Math.round(stressVals.reduce(function(a,b) { return a+b; }, 0) / stressVals.length) : 0;
+
+    firstCardHtml =
+      '<div class="kpi-card healthy">' +
+        '<div class="kpi-label">' + ICONS.plant + ' Peak NDVI (avg)</div>' +
+        '<div class="kpi-value">' + avgPeak + ' <span class="kpi-unit"></span></div>' +
+        '<div class="kpi-trend">Best mean NDVI across fields</div>' +
+      '</div>';
 
     extraCards =
       '<div class="kpi-card healthy">' +
         '<div class="kpi-label">' + ICONS.water + ' Cumulative Rain (avg)</div>' +
         '<div class="kpi-value">' + avgPrecipIn + ' <span class="kpi-unit">in</span></div>' +
         '<div class="kpi-trend">Total for ' + state.filters.selectedYear + '</div>' +
+      '</div>' +
+      '<div class="kpi-card ' + (avgStress > 14 ? 'watch' : 'healthy') + '">' +
+        '<div class="kpi-label">' + ICONS.warning + ' Season Stress Duration</div>' +
+        '<div class="kpi-value">' + avgStress + ' <span class="kpi-unit">days</span></div>' +
+        '<div class="kpi-trend">Avg days in Watch/Critical</div>' +
       '</div>';
   }
 
   d3.select("#kpi-row").html(
-    '<div class="kpi-card healthy">' +
-      '<div class="kpi-label">' + ICONS.plant + ' Average NDVI</div>' +
-      '<div class="kpi-value">' + avgNDVI + ' <span class="kpi-unit"></span></div>' +
-      '<div class="kpi-trend">' + trendIcon + ' ' + trendText + '</div>' +
-    '</div>' +
+    firstCardHtml +
     '<div class="kpi-card healthy">' +
       '<div class="kpi-label">' + ICONS.temp + ' GDD Accumulated (avg)</div>' +
       '<div class="kpi-value">' + avgGDD + ' <span class="kpi-unit">&deg;F-days</span></div>' +
