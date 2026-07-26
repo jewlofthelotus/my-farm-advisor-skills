@@ -1186,10 +1186,13 @@ function renderMap() {
     features: ff.map(function(f) { return { type: "Feature", geometry: f.geometry.geometry, properties: {} }; })
   };
 
-  var mapMargin = Math.min(width, height) * 0.50;
+  var marginPct = 0.20;
   var projection = d3.geoMercator()
     .center([cLon, cLat])
-    .fitExtent([[mapMargin, mapMargin], [width - mapMargin, height - mapMargin]], geoBounds);
+    .fitExtent([
+      [marginPct * width, marginPct * height],
+      [(1 - marginPct) * width, (1 - marginPct) * height]
+    ], geoBounds);
 
   var geoPath = d3.geoPath().projection(projection);
 
