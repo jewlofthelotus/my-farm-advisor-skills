@@ -477,8 +477,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 
 .map-card { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 16px; }
 .map-card h3 { font-size: 0.95rem; font-weight: 600; margin-bottom: 10px; color: #333; }
-.map-card .map-container { width: 100%; height: 500px; position: relative; background: #e8edf2; border-radius: 4px; overflow: hidden; }
-.map-card .map-container svg { width: 100%; height: 100%; }
+.map-card .map-container { width: 100%; height: 500px; position: relative; background: #f0f4f8; border-radius: 4px; overflow: hidden; }
+.map-card .map-container svg { width: 100%; height: 100%; display: block; }
+.map-zoom-controls { position: absolute; bottom: 12px; left: 12px; display: flex; flex-direction: column; gap: 4px; z-index: 10; }
+.map-zoom-controls button { width: 30px; height: 30px; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #333; font-size: 16px; font-weight: 700; cursor: pointer; line-height: 1; display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
+.map-zoom-controls button:hover { background: #f0f0f0; }
 
 .map-action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
 .map-action-col { min-width: 0; }
@@ -1079,49 +1082,92 @@ function renderNDVIvsAWC() {
 
 // ===== MAP =====
 function renderMap() {
-  const container = d3.select("#field-map");
+  var container = d3.select("#field-map");
   container.html("");
-  const ff = state.getFilteredFields().filter(f => f.geometry?.geometry);
+  // Add zoom controls
+  container.append("div").attr("class", "map-zoom-controls")
+    .html('<button id="map-zoom-in">+</button><button id="map-zoom-out">-</button>');
+
+  var ff = state.getFilteredFields().filter(function(f) { return f.geometry?.geometry; });
   if (!ff.length) return;
 
-  const rect = container.node().getBoundingClientRect();
-  const width = rect.width, height = rect.height;
+  var rect = container.node().getBoundingClientRect();
+  var width = rect.width, height = rect.height;
 
-  const svg = container.append("svg")
+  var svg = container.append("svg")
     .attr("width", width).attr("height", height);
 
-  let allCoords = [];
-  ff.forEach(f => {
-    const geo = f.geometry.geometry;
+  var mapGroup = svg.append("g").attr("class", "map-group");
+
+  var allCoords = [];
+  ff.forEach(function(f) {
+    var geo = f.geometry.geometry;
     if (geo.type === "Polygon") {
-      geo.coordinates[0].forEach(c => allCoords.push(c));
+      geo.coordinates[0].forEach(function(c) { allCoords.push(c); });
     } else if (geo.type === "MultiPolygon") {
-      geo.coordinates.forEach(p => p[0].forEach(c => allCoords.push(c)));
+      geo.coordinates.forEach(function(p) { p[0].forEach(function(c) { allCoords.push(c); }); });
     }
   });
-
   if (!allCoords.length) return;
-  const lons = allCoords.map(c => c[0]);
-  const lats = allCoords.map(c => c[1]);
-  const cLon = (d3.min(lons) + d3.max(lons)) / 2;
-  const cLat = (d3.min(lats) + d3.max(lats)) / 2;
 
-  const projection = d3.geoMercator()
+  var lons = allCoords.map(function(c) { return c[0]; });
+  var lats = allCoords.map(function(c) { return c[1]; });
+  var minLon = d3.min(lons), maxLon = d3.max(lons);
+  var minLat = d3.min(lats), maxLat = d3.max(lats);
+  var cLon = (minLon + maxLon) / 2;
+  var cLat = (minLat + maxLat) / 2;
+
+  var geoBounds = {
+    type: "FeatureCollection",
+    features: ff.map(function(f) { return { type: "Feature", geometry: f.geometry.geometry, properties: {} }; })
+  };
+
+  var projection = d3.geoMercator()
     .center([cLon, cLat])
-    .fitExtent([[20, 20], [width - 20, height - 20]], {
-      type: "FeatureCollection",
-      features: ff.map(f => ({
-        type: "Feature",
-        geometry: f.geometry.geometry,
-        properties: {}
-      }))
-    });
+    .fitExtent([[20, 20], [width - 20, height - 20]], geoBounds);
 
-  const geoPath = d3.geoPath().projection(projection);
+  var geoPath = d3.geoPath().projection(projection);
 
-  ff.forEach(f => {
-    const color = THRESHOLD_LABELS[f.current_risk]?.color || "#999";
-    svg.append("path")
+  // Background fill
+  mapGroup.append("rect")
+    .attr("x", 0).attr("y", 0).attr("width", width).attr("height", height)
+    .attr("fill", "#e8f0f8");
+
+  // Bounding box outline
+  var bbox = geoPath.bounds(geoBounds);
+  mapGroup.append("rect")
+    .attr("x", bbox[0][0]).attr("y", bbox[0][1])
+    .attr("width", bbox[1][0] - bbox[0][0]).attr("height", bbox[1][1] - bbox[0][1])
+    .attr("fill", "none").attr("stroke", "#b0c8d8").attr("stroke-width", 1.5)
+    .attr("stroke-dasharray", "6,3");
+
+  // Subtle graticule
+  var padLon = (maxLon - minLon) * 0.3 || 0.05;
+  var padLat = (maxLat - minLat) * 0.3 || 0.05;
+  var step = 0.005;
+  for (var lon = Math.floor((minLon - padLon) / step) * step; lon <= maxLon + padLon; lon += step) {
+    var p1 = projection([lon, minLat - padLat]);
+    var p2 = projection([lon, maxLat + padLat]);
+    if (p1 && p2) {
+      mapGroup.append("line")
+        .attr("x1", p1[0]).attr("y1", p1[1]).attr("x2", p2[0]).attr("y2", p2[1])
+        .attr("stroke", "#d8e4ec").attr("stroke-width", 0.5);
+    }
+  }
+  for (var lat = Math.floor((minLat - padLat) / step) * step; lat <= maxLat + padLat; lat += step) {
+    var p1 = projection([minLon - padLon, lat]);
+    var p2 = projection([maxLon + padLon, lat]);
+    if (p1 && p2) {
+      mapGroup.append("line")
+        .attr("x1", p1[0]).attr("y1", p1[1]).attr("x2", p2[0]).attr("y2", p2[1])
+        .attr("stroke", "#d8e4ec").attr("stroke-width", 0.5);
+    }
+  }
+
+  // Field paths
+  ff.forEach(function(f) {
+    var color = THRESHOLD_LABELS[f.current_risk]?.color || "#999";
+    mapGroup.append("path")
       .datum(f.geometry.geometry)
       .attr("d", geoPath)
       .attr("fill", color)
@@ -1146,12 +1192,29 @@ function renderMap() {
       });
   });
 
-  const legend = svg.append("g").attr("transform", "translate(" + (width - 120) + ", 20)");
-  const tiers = ["healthy", "watch", "critical"];
-  tiers.forEach((t, i) => {
-    const tl = THRESHOLD_LABELS[t];
+  // Zoom behavior
+  var zoom = d3.zoom()
+    .scaleExtent([1, 30])
+    .on("zoom", function(event) {
+      mapGroup.attr("transform", event.transform);
+    });
+  svg.call(zoom);
+
+  // Legend (outside zoom group)
+  var legend = svg.append("g").attr("transform", "translate(" + (width - 120) + ", 20)");
+  var tiers = ["healthy", "watch", "critical"];
+  tiers.forEach(function(t, i) {
+    var tl = THRESHOLD_LABELS[t];
     legend.append("rect").attr("x", 0).attr("y", i * 20).attr("width", 14).attr("height", 14).attr("fill", tl.color).attr("rx", 2);
     legend.append("text").attr("x", 20).attr("y", i * 20 + 12).attr("font-size", "11px").attr("fill", "#333").text(tl.label);
+  });
+
+  // Zoom control buttons
+  document.getElementById("map-zoom-in").addEventListener("click", function() {
+    svg.transition().duration(300).call(zoom.scaleBy, 1.5);
+  });
+  document.getElementById("map-zoom-out").addEventListener("click", function() {
+    svg.transition().duration(300).call(zoom.scaleBy, 0.667);
   });
 }
 
