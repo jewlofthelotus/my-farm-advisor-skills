@@ -438,13 +438,13 @@ def fetch_static_map(bbox):
     mx1, my1 = _merc(pl, pb)
     mx2, my2 = _merc(pr, pt)
     mw, mh = mx2 - mx1, my2 - my1
-    target_w = 800
+    target_w = 1600
     target_h = max(1, int(target_w * mh / mw))
     url = (
         f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
         f"?bbox={pl},{pb},{pr},{pt}"
         f"&bboxSR=4326&size={target_w},{target_h}&imageSR=102100"
-        f"&format=png32&transparent=true&f=image"
+        f"&format=jpg&f=image"
     )
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -1186,7 +1186,7 @@ function renderMap() {
     features: ff.map(function(f) { return { type: "Feature", geometry: f.geometry.geometry, properties: {} }; })
   };
 
-  var mapMargin = Math.min(width, height) * 0.22;
+  var mapMargin = Math.min(width, height) * 0.50;
   var projection = d3.geoMercator()
     .center([cLon, cLat])
     .fitExtent([[mapMargin, mapMargin], [width - mapMargin, height - mapMargin]], geoBounds);
