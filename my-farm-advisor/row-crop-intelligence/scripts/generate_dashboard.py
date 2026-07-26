@@ -798,8 +798,13 @@ function renderKPIs() {
   const gddVals = ff.map(f => f.weather_summary?.gdd_accumulated || 0);
   const avgGDD = gddVals.length ? Math.round(gddVals.reduce((a,b) => a+b, 0) / gddVals.length) : 0;
 
-  var extraCards = '';
-  var firstCardHtml;
+  var gddCardHtml =
+    '<div class="kpi-card healthy">' +
+      '<div class="kpi-label">' + ICONS.temp + ' GDD Accumulated (avg)</div>' +
+      '<div class="kpi-value">' + avgGDD + ' <span class="kpi-unit">&deg;F-days</span></div>' +
+      '<div class="kpi-trend">Target: ' + CONFIG.gdd_target + ' &deg;F-days</div>' +
+    '</div>';
+
   if (isCurrent) {
     const critical = ff.filter(f => f.current_risk === 'critical').length;
     const watch = ff.filter(f => f.current_risk === 'watch').length;
@@ -809,24 +814,24 @@ function renderKPIs() {
     const rainDays = ff.map(f => f.weather_summary?.days_since_significant_rain).filter(d => d != null);
     const maxRainDays = rainDays.length ? Math.max(...rainDays) : '--';
 
-    firstCardHtml =
-      '<div class="kpi-card healthy">' +
-        '<div class="kpi-label">' + ICONS.plant + ' Average NDVI</div>' +
-        '<div class="kpi-value">' + avgNDVI + ' <span class="kpi-unit"></span></div>' +
-        '<div class="kpi-trend">' + trendIcon + ' ' + trendText + '</div>' +
-      '</div>';
-
-    extraCards =
+    d3.select("#kpi-row").html(
       '<div class="kpi-card ' + riskClass + '">' +
         '<div class="kpi-label">' + ICONS.warning + ' Fields Requiring Attention</div>' +
         '<div class="kpi-value">' + attention + ' / ' + total + '</div>' +
         '<div class="kpi-trend">' + critical + ' critical &middot; ' + watch + ' watch</div>' +
       '</div>' +
+      '<div class="kpi-card healthy">' +
+        '<div class="kpi-label">' + ICONS.plant + ' Average NDVI</div>' +
+        '<div class="kpi-value">' + avgNDVI + ' <span class="kpi-unit"></span></div>' +
+        '<div class="kpi-trend">' + trendIcon + ' ' + trendText + '</div>' +
+      '</div>' +
+      gddCardHtml +
       '<div class="kpi-card ' + (maxRainDays > 7 ? 'watch' : 'healthy') + '">' +
         '<div class="kpi-label">' + ICONS.water + ' Days Since Significant Rain</div>' +
         '<div class="kpi-value">' + maxRainDays + ' <span class="kpi-unit">days</span></div>' +
         '<div class="kpi-trend">Threshold: >0.1 in</div>' +
-      '</div>';
+      '</div>'
+    );
   } else {
     const peakNdvVals = ff.map(function(f) {
       var s = f.ndvi_series;
@@ -840,14 +845,13 @@ function renderKPIs() {
     const stressVals = ff.map(function(f) { return computeStressDuration(f.ndvi_series, CONFIG); });
     const avgStress = stressVals.length ? Math.round(stressVals.reduce(function(a,b) { return a+b; }, 0) / stressVals.length) : 0;
 
-    firstCardHtml =
+    d3.select("#kpi-row").html(
       '<div class="kpi-card healthy">' +
         '<div class="kpi-label">' + ICONS.plant + ' Peak NDVI (avg)</div>' +
         '<div class="kpi-value">' + avgPeak + ' <span class="kpi-unit"></span></div>' +
         '<div class="kpi-trend">Best mean NDVI across fields</div>' +
-      '</div>';
-
-    extraCards =
+      '</div>' +
+      gddCardHtml +
       '<div class="kpi-card healthy">' +
         '<div class="kpi-label">' + ICONS.water + ' Cumulative Rain (avg)</div>' +
         '<div class="kpi-value">' + avgPrecipIn + ' <span class="kpi-unit">in</span></div>' +
@@ -857,18 +861,9 @@ function renderKPIs() {
         '<div class="kpi-label">' + ICONS.warning + ' Season Stress Duration</div>' +
         '<div class="kpi-value">' + avgStress + ' <span class="kpi-unit">days</span></div>' +
         '<div class="kpi-trend">Avg days in Watch/Critical</div>' +
-      '</div>';
+      '</div>'
+    );
   }
-
-  d3.select("#kpi-row").html(
-    firstCardHtml +
-    '<div class="kpi-card healthy">' +
-      '<div class="kpi-label">' + ICONS.temp + ' GDD Accumulated (avg)</div>' +
-      '<div class="kpi-value">' + avgGDD + ' <span class="kpi-unit">&deg;F-days</span></div>' +
-      '<div class="kpi-trend">Target: ' + CONFIG.gdd_target + ' &deg;F-days</div>' +
-    '</div>' +
-    extraCards
-  );
 }
 
 // ===== NDVI TIME SERIES =====
