@@ -647,8 +647,10 @@ function computeWeatherSummaries(weatherRecords, config) {
   if (!weatherRecords || !weatherRecords.length) return { gdd_accumulated: 0, days_since_significant_rain: null };
   var significantMm = config.precip_significant_mm || 2.54;
   var gddTotal = 0;
+  var precipTotal = 0;
   weatherRecords.forEach(function(d) {
     gddTotal += Math.max(0, (d.T2M_MAX + d.T2M_MIN) / 2 - 10);
+    precipTotal += d.PRECTOTCORR || 0;
   });
   var sorted = weatherRecords.slice().sort(function(a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
   var lastDate = sorted.length ? sorted[sorted.length - 1].date : null;
@@ -658,7 +660,7 @@ function computeWeatherSummaries(weatherRecords, config) {
     var lastRain = recentRain[recentRain.length - 1].date;
     daysSince = Math.round((new Date(lastDate) - new Date(lastRain)) / 86400000);
   }
-  return { gdd_accumulated: Math.round(gddTotal), days_since_significant_rain: daysSince };
+  return { gdd_accumulated: Math.round(gddTotal), days_since_significant_rain: daysSince, total_precip_mm: Math.round(precipTotal) };
 }
 
 // ===== STATE (pub/sub) =====
@@ -747,10 +749,12 @@ function syncFilters() {
   } else if (validYears.length === 0) {
     state.filters.selectedYear = '2026';
   }
+  var thisYear = String(new Date().getFullYear());
   var yearSelect = document.getElementById("year-select");
   yearSelect.innerHTML = validYears.map(function(y) {
     var sel = y === state.filters.selectedYear;
-    return '<option value="' + y + '"' + (sel ? ' selected' : '') + '>' + y + '</option>';
+    var label = y + (y === thisYear ? ' (Current)' : '');
+    return '<option value="' + y + '"' + (sel ? ' selected' : '') + '>' + label + '</option>';
   }).join('');
 
   state.publish();
@@ -762,9 +766,7 @@ const tooltip = d3.select("#tooltip");
 // ===== KPI RENDER =====
 function renderKPIs() {
   const ff = state.getFilteredFields();
-  const critical = ff.filter(f => f.current_risk === 'critical').length;
-  const watch = ff.filter(f => f.current_risk === 'watch').length;
-  const attention = critical + watch;
+  const isCurrent = state.filters.selectedYear === String(new Date().getFullYear());
   const total = ff.length;
 
   const ndviVals = ff.filter(f => f.current_ndvi != null).map(f => f.current_ndvi);
@@ -778,17 +780,40 @@ function renderKPIs() {
   const gddVals = ff.map(f => f.weather_summary?.gdd_accumulated || 0);
   const avgGDD = gddVals.length ? Math.round(gddVals.reduce((a,b) => a+b, 0) / gddVals.length) : 0;
 
-  const rainDays = ff.map(f => f.weather_summary?.days_since_significant_rain).filter(d => d != null);
-  const maxRainDays = rainDays.length ? Math.max(...rainDays) : '--';
+  var extraCards = '';
+  if (isCurrent) {
+    const critical = ff.filter(f => f.current_risk === 'critical').length;
+    const watch = ff.filter(f => f.current_risk === 'watch').length;
+    const attention = critical + watch;
+    const riskClass = attention > 0 ? (critical > 0 ? 'critical' : 'watch') : 'healthy';
 
-  const riskClass = attention > 0 ? (critical > 0 ? 'critical' : 'watch') : 'healthy';
+    const rainDays = ff.map(f => f.weather_summary?.days_since_significant_rain).filter(d => d != null);
+    const maxRainDays = rainDays.length ? Math.max(...rainDays) : '--';
+
+    extraCards =
+      '<div class="kpi-card ' + riskClass + '">' +
+        '<div class="kpi-label">' + ICONS.warning + ' Fields Requiring Attention</div>' +
+        '<div class="kpi-value">' + attention + ' / ' + total + '</div>' +
+        '<div class="kpi-trend">' + critical + ' critical &middot; ' + watch + ' watch</div>' +
+      '</div>' +
+      '<div class="kpi-card ' + (maxRainDays > 7 ? 'watch' : 'healthy') + '">' +
+        '<div class="kpi-label">' + ICONS.water + ' Days Since Significant Rain</div>' +
+        '<div class="kpi-value">' + maxRainDays + ' <span class="kpi-unit">days</span></div>' +
+        '<div class="kpi-trend">Threshold: >0.1 in</div>' +
+      '</div>';
+  } else {
+    const precipVals = ff.map(f => f.weather_summary?.total_precip_mm || 0);
+    const avgPrecipIn = precipVals.length ? (precipVals.reduce((a,b) => a+b, 0) / precipVals.length / 25.4).toFixed(1) : '--';
+
+    extraCards =
+      '<div class="kpi-card healthy">' +
+        '<div class="kpi-label">' + ICONS.water + ' Cumulative Rain (avg)</div>' +
+        '<div class="kpi-value">' + avgPrecipIn + ' <span class="kpi-unit">in</span></div>' +
+        '<div class="kpi-trend">Total for ' + state.filters.selectedYear + '</div>' +
+      '</div>';
+  }
 
   d3.select("#kpi-row").html(
-    '<div class="kpi-card ' + riskClass + '">' +
-      '<div class="kpi-label">' + ICONS.warning + ' Fields Requiring Attention</div>' +
-      '<div class="kpi-value">' + attention + ' / ' + total + '</div>' +
-      '<div class="kpi-trend">' + critical + ' critical &middot; ' + watch + ' watch</div>' +
-    '</div>' +
     '<div class="kpi-card healthy">' +
       '<div class="kpi-label">' + ICONS.plant + ' Average NDVI</div>' +
       '<div class="kpi-value">' + avgNDVI + ' <span class="kpi-unit"></span></div>' +
@@ -799,11 +824,7 @@ function renderKPIs() {
       '<div class="kpi-value">' + avgGDD + ' <span class="kpi-unit">&deg;F-days</span></div>' +
       '<div class="kpi-trend">Target: ' + CONFIG.gdd_target + ' &deg;F-days</div>' +
     '</div>' +
-    '<div class="kpi-card ' + (rainDays > 7 ? 'watch' : 'healthy') + '">' +
-      '<div class="kpi-label">' + ICONS.water + ' Days Since Significant Rain</div>' +
-      '<div class="kpi-value">' + maxRainDays + ' <span class="kpi-unit">days</span></div>' +
-      '<div class="kpi-trend">Threshold: >0.1 in</div>' +
-    '</div>'
+    extraCards
   );
 }
 
@@ -1222,6 +1243,14 @@ function renderSoil() {
 
 // ===== ACTION LIST =====
 function renderActionList() {
+  var section = d3.select("#action-list-section");
+  var isCurrent = state.filters.selectedYear === String(new Date().getFullYear());
+  if (!isCurrent) {
+    section.style("display", "none");
+    return;
+  }
+  section.style("display", "block");
+
   let ff = state.getFilteredFields()
     .filter(f => f.current_risk === 'critical' || f.current_risk === 'watch')
     .sort((a, b) => {
