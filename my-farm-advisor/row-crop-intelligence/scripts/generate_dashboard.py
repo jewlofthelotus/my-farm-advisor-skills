@@ -480,6 +480,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 .map-card .map-container { width: 100%; height: 500px; position: relative; background: #e8edf2; border-radius: 4px; overflow: hidden; }
 .map-card .map-container svg { width: 100%; height: 100%; }
 
+.map-action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.map-action-col { min-width: 0; }
+.map-action-col .map-card,
+.map-action-col .action-list { margin-bottom: 0; }
 .action-list { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 16px; }
 .action-list h3 { font-size: 0.95rem; font-weight: 600; margin-bottom: 10px; color: #333; }
 .action-item { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid #eee; align-items: flex-start; }
@@ -510,6 +514,7 @@ svg.icon-lg { width: 24px; height: 24px; }
 @media (max-width: 768px) {
   .chart-grid { grid-template-columns: 1fr; }
   .kpi-row { grid-template-columns: 1fr 1fr; }
+  .map-action-row { grid-template-columns: 1fr; }
   .header .header-main { flex-direction: column; }
   .header .header-filters { flex-wrap: wrap; }
 }
@@ -539,6 +544,21 @@ svg.icon-lg { width: 24px; height: 24px; }
 
   <div id="kpi-row" class="kpi-row"></div>
 
+  <div class="map-action-row">
+    <div class="map-action-col">
+      <div class="action-list" id="action-list-section">
+        <h3>Priority Actions</h3>
+        <div id="action-list"></div>
+      </div>
+    </div>
+    <div class="map-action-col">
+      <div class="map-card">
+        <h3>Field Risk Map — Click to Filter</h3>
+        <div class="map-container" id="field-map"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="chart-grid" id="ndvi-time-series-section">
     <div class="chart-card chart-full">
       <h3>NDVI Declining in __DECLINING_COUNT__ Fields</h3>
@@ -557,11 +577,6 @@ svg.icon-lg { width: 24px; height: 24px; }
     </div>
   </div>
 
-  <div class="map-card">
-    <h3>Field Risk Map — Click to Filter</h3>
-    <div class="map-container" id="field-map"></div>
-  </div>
-
   <div class="chart-grid">
     <div class="chart-card">
       <h3>GDD Accumulation: Actual vs. Normal</h3>
@@ -571,11 +586,6 @@ svg.icon-lg { width: 24px; height: 24px; }
       <h3>Soil Organic Matter by Field</h3>
       <div class="chart-container" id="soil-chart"></div>
     </div>
-  </div>
-
-  <div class="action-list" id="action-list-section">
-    <h3>Priority Actions</h3>
-    <div id="action-list"></div>
   </div>
 
   <div class="narrative" id="narrative-section">
