@@ -260,6 +260,12 @@ def extract_field_data(field_dir, farm_root, data_root, current_crop=None):
     ndvi_series = compute_scene_ndvi_time_series(field_dir, data_root)
     weather_summ = compute_weather_summaries(weather)
 
+    # Use only the most recent year's NDVI data for classification and metrics
+    # to match JS behavior (which filters ndvi_series to selected year)
+    ndvi_years = sorted(set(s["date"][:4] for s in ndvi_series if len(s["date"]) >= 4))
+    latest_year = ndvi_years[-1] if ndvi_years else None
+    year_ndvi_series = [s for s in ndvi_series if s["date"].startswith(latest_year)] if latest_year else ndvi_series
+
     cdl_crops = {}
     if yearly and "years" in yearly:
         for y in yearly["years"]:
@@ -272,10 +278,10 @@ def extract_field_data(field_dir, farm_root, data_root, current_crop=None):
 
     crop_type = "corn"
     cc = CROP_CONFIG["corn"]
-    risk = classify_risk(ndvi_series, cc)
-    trend, trend_pct = compute_ndvi_trend(ndvi_series)
+    risk = classify_risk(year_ndvi_series, cc)
+    trend, trend_pct = compute_ndvi_trend(year_ndvi_series)
 
-    current_ndvi = round(ndvi_series[-1]["value"], 3) if ndvi_series else None
+    current_ndvi = round(year_ndvi_series[-1]["value"], 3) if year_ndvi_series else None
 
     ndvi_corn_avg = None
     ndvi_soybean_avg = None
@@ -452,7 +458,7 @@ def fetch_static_map(bbox):
             data = resp.read()
             b64 = base64.b64encode(data).decode("ascii")
             print(f"  Static map fetched: {len(data) / 1024:.0f} KB")
-            return f"data:image/png;base64,{b64}"
+            return f"data:image/jpeg;base64,{b64}"
     except Exception as e:
         print(f"  Warning: could not fetch static map ({e})")
         return ""
@@ -1151,12 +1157,19 @@ function renderNDVIvsAWC() {
 function renderMap() {
   var container = d3.select("#field-map");
   container.html("");
-  // Add zoom controls
   container.append("div").attr("class", "map-zoom-controls")
     .html('<button id="map-zoom-in">+</button><button id="map-zoom-out">-</button>');
 
-  var ff = state.getFilteredFields().filter(function(f) { return f.geometry?.geometry; });
-  if (!ff.length) return;
+  var year = state.filters.selectedYear;
+  var selectedIds = state.filters.fieldIds;
+
+  var allCornFields = ALL_FIELDS.filter(function(f) { return isFieldCorn(f, year) && f.geometry?.geometry; });
+  if (!allCornFields.length) return;
+
+  var visibleFields = selectedIds.length > 0
+    ? allCornFields.filter(function(f) { return selectedIds.includes(f.id); })
+    : allCornFields;
+  if (!visibleFields.length) visibleFields = allCornFields;
 
   var rect = container.node().getBoundingClientRect();
   var width = rect.width, height = rect.height;
@@ -1166,76 +1179,80 @@ function renderMap() {
 
   var mapGroup = svg.append("g").attr("class", "map-group");
 
-  var allCoords = [];
-  ff.forEach(function(f) {
+  // Projection from ALL corn fields (fixed — doesn't change per field selection)
+  var lons = [], lats = [];
+  allCornFields.forEach(function(f) {
     var geo = f.geometry.geometry;
-    if (geo.type === "Polygon") {
-      geo.coordinates[0].forEach(function(c) { allCoords.push(c); });
-    } else if (geo.type === "MultiPolygon") {
-      geo.coordinates.forEach(function(p) { p[0].forEach(function(c) { allCoords.push(c); }); });
-    }
+    if (geo.type === "Polygon") geo.coordinates[0].forEach(function(c) { lons.push(c[0]); lats.push(c[1]); });
+    else if (geo.type === "MultiPolygon") geo.coordinates.forEach(function(p) { p[0].forEach(function(c) { lons.push(c[0]); lats.push(c[1]); }); });
   });
-  if (!allCoords.length) return;
+  if (!lons.length) return;
+  var cLon = (d3.min(lons) + d3.max(lons)) / 2, cLat = (d3.min(lats) + d3.max(lats)) / 2;
 
-  var lons = allCoords.map(function(c) { return c[0]; });
-  var lats = allCoords.map(function(c) { return c[1]; });
-  var minLon = d3.min(lons), maxLon = d3.max(lons);
-  var minLat = d3.min(lats), maxLat = d3.max(lats);
-  var cLon = (minLon + maxLon) / 2;
-  var cLat = (minLat + maxLat) / 2;
-
-  var geoBounds = {
+  var allGeoBounds = {
     type: "FeatureCollection",
-    features: ff.map(function(f) { return { type: "Feature", geometry: f.geometry.geometry, properties: {} }; })
+    features: allCornFields.map(function(f) { return { type: "Feature", geometry: f.geometry.geometry, properties: {} }; })
   };
 
   var projection = d3.geoMercator()
     .center([cLon, cLat])
-    .fitExtent([[20, 20], [width - 20, height - 20]], geoBounds);
-
+    .fitExtent([[20, 20], [width - 20, height - 20]], allGeoBounds);
   var geoPath = d3.geoPath().projection(projection);
 
-  // Static basemap (ESRI World Imagery, fetched at build time)
+  // Static basemap fills SVG viewport (or grey fallback)
   if (MAP_BASE64) {
-    mapGroup.insert("image", ":first-child")
+    mapGroup.append("image")
       .attr("x", 0).attr("y", 0)
       .attr("width", width).attr("height", height)
       .attr("preserveAspectRatio", "xMidYMid slice")
       .attr("href", MAP_BASE64)
       .attr("opacity", 0.7);
+  } else {
+    mapGroup.append("rect")
+      .attr("x", 0).attr("y", 0).attr("width", width).attr("height", height)
+      .attr("fill", "#e8f0f8");
   }
 
-  // Background fill (fallback behind basemap)
-  mapGroup.insert("rect", ":first-child")
-    .attr("x", 0).attr("y", 0).attr("width", width).attr("height", height)
-    .attr("fill", "#e8f0f8");
-
-  // Field paths
-  ff.forEach(function(f) {
-    var color = THRESHOLD_LABELS[f.current_risk]?.color || "#999";
-    mapGroup.append("path")
+  // Draw ALL corn fields — show only selected, hide others
+  allCornFields.forEach(function(f) {
+    var visible = selectedIds.length === 0 || selectedIds.includes(f.id);
+    var color = visible ? (THRESHOLD_LABELS[f.current_risk]?.color || "#999") : "none";
+    var fieldName = f.name, fieldRisk = f.current_risk, fieldNdvi = f.current_ndvi, fieldAcres = f.area_acres;
+    var fieldId = f.id;
+    // Fill path — risk tier color, no stroke
+    var fp = mapGroup.append("path")
       .datum(f.geometry.geometry)
       .attr("d", geoPath)
       .attr("fill", color)
-      .attr("stroke", "#FFEB3B")
-      .attr("stroke-width", 3)
-      .attr("opacity", 0.85)
-      .style("cursor", "pointer")
-      .on("mouseenter", function() {
-        d3.select(this).attr("opacity", 1).attr("stroke-width", 5);
-        tooltip.classed("visible", true)
-          .html("<strong>" + f.name + "</strong><br>Risk: " + f.current_risk + "<br>NDVI: " + (f.current_ndvi || '--') + "<br>Area: " + f.area_acres + " ac")
-          .style("left", (d3.event.pageX + 12) + "px")
-          .style("top", (d3.event.pageY - 28) + "px");
-      })
-      .on("mouseleave", function() {
-        d3.select(this).attr("opacity", 0.85).attr("stroke-width", 3);
-        tooltip.classed("visible", false);
-      })
-      .on("click", function() {
-        state.filters.fieldIds = [f.id];
-        syncFilters();
-      });
+      .attr("stroke", "none")
+      .attr("opacity", visible ? 0.85 : 0)
+      .style("pointer-events", visible ? "auto" : "none")
+      .style("cursor", visible ? "pointer" : "default");
+    // Outline path — neon green border, no fill (sits on top)
+    var op = mapGroup.append("path")
+      .datum(f.geometry.geometry)
+      .attr("d", geoPath)
+      .attr("fill", "none")
+      .attr("stroke", visible ? "#39FF14" : "none")
+      .attr("stroke-width", visible ? 3.5 : 0)
+      .attr("opacity", visible ? 1 : 0)
+      .style("pointer-events", "none");
+    if (!visible) return;
+    fp.on("mouseenter", function() {
+      op.attr("stroke-width", 6);
+      tooltip.classed("visible", true)
+        .html("<strong>" + fieldName + "</strong><br>Risk: " + fieldRisk + "<br>NDVI: " + (fieldNdvi || '--') + "<br>Area: " + fieldAcres + " ac")
+        .style("left", (d3.event.pageX + 12) + "px")
+        .style("top", (d3.event.pageY - 28) + "px");
+    })
+    .on("mouseleave", function() {
+      op.attr("stroke-width", 3.5);
+      tooltip.classed("visible", false);
+    })
+    .on("click", function() {
+      state.filters.fieldIds = [fieldId];
+      syncFilters();
+    });
   });
 
   // Zoom behavior
@@ -1247,28 +1264,40 @@ function renderMap() {
     });
   svg.call(zoom);
 
-  // Zoom to fit current fields
-  var fitBounds = geoPath.bounds(geoBounds);
-  var bx = fitBounds[0][0], by = fitBounds[0][1];
-  var bw = fitBounds[1][0] - bx, bh = fitBounds[1][1] - by;
+  // Zoom to visible fields
+  var fitFields = visibleFields;
+  var fitGeoBounds = {
+    type: "FeatureCollection",
+    features: fitFields.map(function(f) { return { type: "Feature", geometry: f.geometry.geometry, properties: {} }; })
+  };
+  var fb = geoPath.bounds(fitGeoBounds);
+  var bx = fb[0][0], by = fb[0][1];
+  var bw = fb[1][0] - bx, bh = fb[1][1] - by;
   if (bw > 0 && bh > 0) {
-    var fitPad = 0.10;
-    var fitScale = Math.min((width * (1 - fitPad * 2)) / bw, (height * (1 - fitPad * 2)) / bh);
-    var fitTx = width / 2 - (bx + bw / 2) * fitScale;
-    var fitTy = height / 2 - (by + bh / 2) * fitScale;
-    svg.call(zoom.transform, d3.zoomIdentity.translate(fitTx, fitTy).scale(fitScale));
+    var pad = 0.10;
+    var s = Math.min((width * (1 - pad * 2)) / bw, (height * (1 - pad * 2)) / bh);
+    if (s > 1.05) {
+      var tx = width / 2 - (bx + bw / 2) * s;
+      var ty = height / 2 - (by + bh / 2) * s;
+      svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(s));
+    } else {
+      svg.call(zoom.transform, d3.zoomIdentity);
+    }
+  } else {
+    svg.call(zoom.transform, d3.zoomIdentity);
   }
 
-  // HTML legend (outside SVG)
-  var legendHtml = '';
-  var tiers = ["healthy", "watch", "critical"];
-  tiers.forEach(function(t) {
+  // HTML legend
+  var legendEl = document.getElementById("map-legend");
+  legendEl.innerHTML = "";
+  ["healthy", "watch", "critical"].forEach(function(t) {
     var tl = THRESHOLD_LABELS[t];
-    legendHtml += '<span class="legend-item"><span class="legend-swatch" style="background:' + tl.color + '"></span>' + tl.label + '</span>';
+    var item = document.createElement("span");
+    item.className = "legend-item";
+    item.innerHTML = '<span class="legend-swatch" style="background:' + tl.color + '"></span>' + tl.label;
+    legendEl.appendChild(item);
   });
-  document.getElementById("map-legend").innerHTML = legendHtml;
 
-  // Zoom control buttons
   document.getElementById("map-zoom-in").addEventListener("click", function() {
     svg.transition().duration(300).call(zoom.scaleBy, 1.5);
   });
@@ -1424,8 +1453,15 @@ function renderActionList() {
   let ff = state.getFilteredFields()
     .filter(f => f.current_risk === 'critical' || f.current_risk === 'watch')
     .sort((a, b) => {
-      const order = { critical: 0, watch: 1, healthy: 2 };
-      return (order[a.current_risk] || 2) - (order[b.current_risk] || 2);
+      function riskScore(f) {
+        var tierWeight = f.current_risk === 'critical' ? 100 : 50;
+        var ndviPenalty = f.current_ndvi != null ? Math.max(0, (CONFIG.watch_threshold - f.current_ndvi) * 100) : 0;
+        var trendPenalty = f.ndvi_trend === 'declining' ? Math.abs(f.ndvi_trend_pct || 0) * 2 : 0;
+        var awcPenalty = f.soil?.awc_in_in != null && f.soil.awc_in_in < 0.5 ? (0.5 - f.soil.awc_in_in) * 20 : 0;
+        var rainPenalty = (f.weather_summary?.days_since_significant_rain || 0) * 0.5;
+        return tierWeight + ndviPenalty + trendPenalty + awcPenalty + rainPenalty;
+      }
+      return riskScore(b) - riskScore(a);
     });
 
   const container = d3.select("#action-list");
@@ -1447,7 +1483,7 @@ function renderActionList() {
     html += '<div class="action-item">' +
       '<span class="risk-badge" style="background:' + tl.color + '">' + tl.label + '</span>' +
       '<span class="risk-text">' +
-        '<strong>' + f.id + '</strong>: ' + ndviInfo + trendInfo + ' &middot; ' + soilInfo + '<br>' +
+        '<strong>' + f.name + ' (' + f.id + ')</strong>: ' + ndviInfo + trendInfo + ' &middot; ' + soilInfo + '<br>' +
         '<span style="color:#777; font-size:0.8rem;">' + action + '</span>' +
       '</span>' +
     '</div>';
