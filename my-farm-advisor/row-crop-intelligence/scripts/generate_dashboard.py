@@ -539,6 +539,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 
 .map-card { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 16px; }
 .map-card h3 { font-size: 0.95rem; font-weight: 600; margin-bottom: 10px; color: #333; }
+.map-card h3 .map-legend { float: right; font-size: 0.7rem; font-weight: 400; display: flex; gap: 12px; }
+.map-card h3 .map-legend .legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.map-card h3 .map-legend .legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
 .map-card .map-container { width: 100%; height: 500px; position: relative; background: #f0f4f8; border-radius: 4px; overflow: hidden; }
 .map-card .map-container svg { width: 100%; height: 100%; display: block; }
 .map-zoom-controls { position: absolute; bottom: 12px; left: 12px; display: flex; flex-direction: column; gap: 4px; z-index: 10; }
@@ -618,7 +621,7 @@ svg.icon-lg { width: 24px; height: 24px; }
     </div>
     <div class="map-action-col">
       <div class="map-card">
-        <h3>Field Risk Map — Click to Filter</h3>
+        <h3>Field Risk Map — Click to Filter<span class="map-legend" id="map-legend"></span></h3>
         <div class="map-container" id="field-map"></div>
       </div>
     </div>
@@ -1214,19 +1217,19 @@ function renderMap() {
       .datum(f.geometry.geometry)
       .attr("d", geoPath)
       .attr("fill", color)
-      .attr("stroke", "#fff")
-      .attr("stroke-width", 2)
-      .attr("opacity", 0.8)
+      .attr("stroke", "#FFEB3B")
+      .attr("stroke-width", 3)
+      .attr("opacity", 0.85)
       .style("cursor", "pointer")
       .on("mouseenter", function() {
-        d3.select(this).attr("opacity", 1).attr("stroke-width", 3);
+        d3.select(this).attr("opacity", 1).attr("stroke-width", 5);
         tooltip.classed("visible", true)
           .html("<strong>" + f.name + "</strong><br>Risk: " + f.current_risk + "<br>NDVI: " + (f.current_ndvi || '--') + "<br>Area: " + f.area_acres + " ac")
           .style("left", (d3.event.pageX + 12) + "px")
           .style("top", (d3.event.pageY - 28) + "px");
       })
       .on("mouseleave", function() {
-        d3.select(this).attr("opacity", 0.8).attr("stroke-width", 2);
+        d3.select(this).attr("opacity", 0.85).attr("stroke-width", 3);
         tooltip.classed("visible", false);
       })
       .on("click", function() {
@@ -1244,14 +1247,26 @@ function renderMap() {
     });
   svg.call(zoom);
 
-  // Legend (outside zoom group)
-  var legend = svg.append("g").attr("transform", "translate(" + (width - 120) + ", 20)");
+  // Zoom to fit current fields
+  var fitBounds = geoPath.bounds(geoBounds);
+  var bx = fitBounds[0][0], by = fitBounds[0][1];
+  var bw = fitBounds[1][0] - bx, bh = fitBounds[1][1] - by;
+  if (bw > 0 && bh > 0) {
+    var fitPad = 0.10;
+    var fitScale = Math.min((width * (1 - fitPad * 2)) / bw, (height * (1 - fitPad * 2)) / bh);
+    var fitTx = width / 2 - (bx + bw / 2) * fitScale;
+    var fitTy = height / 2 - (by + bh / 2) * fitScale;
+    svg.call(zoom.transform, d3.zoomIdentity.translate(fitTx, fitTy).scale(fitScale));
+  }
+
+  // HTML legend (outside SVG)
+  var legendHtml = '';
   var tiers = ["healthy", "watch", "critical"];
-  tiers.forEach(function(t, i) {
+  tiers.forEach(function(t) {
     var tl = THRESHOLD_LABELS[t];
-    legend.append("rect").attr("x", 0).attr("y", i * 20).attr("width", 14).attr("height", 14).attr("fill", tl.color).attr("rx", 2);
-    legend.append("text").attr("x", 20).attr("y", i * 20 + 12).attr("font-size", "11px").attr("fill", "#333").text(tl.label);
+    legendHtml += '<span class="legend-item"><span class="legend-swatch" style="background:' + tl.color + '"></span>' + tl.label + '</span>';
   });
+  document.getElementById("map-legend").innerHTML = legendHtml;
 
   // Zoom control buttons
   document.getElementById("map-zoom-in").addEventListener("click", function() {
