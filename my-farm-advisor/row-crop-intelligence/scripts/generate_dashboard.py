@@ -432,8 +432,8 @@ def _merc(lon, lat):
 def fetch_static_map(bbox):
     """Fetch ESRI World Imagery for the given WGS84 bbox, return base64 data URI."""
     min_lon, min_lat, max_lon, max_lat = bbox
-    pad_lon = max((max_lon - min_lon) * 0.15, 0.005)
-    pad_lat = max((max_lat - min_lat) * 0.15, 0.005)
+    pad_lon = max((max_lon - min_lon) * 0.40, 0.005)
+    pad_lat = max((max_lat - min_lat) * 0.40, 0.005)
     pl, pb, pr, pt = min_lon - pad_lon, min_lat - pad_lat, max_lon + pad_lon, max_lat + pad_lat
     mx1, my1 = _merc(pl, pb)
     mx2, my2 = _merc(pr, pt)
@@ -1186,13 +1186,9 @@ function renderMap() {
     features: ff.map(function(f) { return { type: "Feature", geometry: f.geometry.geometry, properties: {} }; })
   };
 
-  var marginPct = 0.20;
   var projection = d3.geoMercator()
     .center([cLon, cLat])
-    .fitExtent([
-      [marginPct * width, marginPct * height],
-      [(1 - marginPct) * width, (1 - marginPct) * height]
-    ], geoBounds);
+    .fitExtent([[20, 20], [width - 20, height - 20]], geoBounds);
 
   var geoPath = d3.geoPath().projection(projection);
 
