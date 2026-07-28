@@ -1238,6 +1238,7 @@ function renderMap() {
   // Zoom behavior
   var zoom = d3.zoom()
     .scaleExtent([1, 30])
+    .translateExtent([[0, 0], [width, height]])
     .on("zoom", function(event) {
       mapGroup.attr("transform", event.transform);
     });
