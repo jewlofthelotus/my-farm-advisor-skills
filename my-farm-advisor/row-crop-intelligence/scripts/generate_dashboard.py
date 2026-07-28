@@ -1194,20 +1194,12 @@ function renderMap() {
 
   // Static basemap (ESRI World Imagery, fetched at build time)
   if (MAP_BASE64) {
-    var imgPad = 0.15;
-    var imgMinLon = MAP_BBOX[0], imgMinLat = MAP_BBOX[1];
-    var imgMaxLon = MAP_BBOX[2], imgMaxLat = MAP_BBOX[3];
-    var ipl = (imgMaxLon - imgMinLon) * imgPad || 0.005;
-    var ipa = (imgMaxLat - imgMinLat) * imgPad || 0.005;
-    var tl = projection([imgMinLon - ipl, imgMaxLat + ipa]);
-    var br = projection([imgMaxLon + ipl, imgMinLat - ipa]);
-    if (tl && br) {
-      mapGroup.insert("image", ":first-child")
-        .attr("x", tl[0]).attr("y", tl[1])
-        .attr("width", br[0] - tl[0]).attr("height", br[1] - tl[1])
-        .attr("href", MAP_BASE64)
-        .attr("opacity", 0.7);
-    }
+    mapGroup.insert("image", ":first-child")
+      .attr("x", 0).attr("y", 0)
+      .attr("width", width).attr("height", height)
+      .attr("preserveAspectRatio", "xMidYMid slice")
+      .attr("href", MAP_BASE64)
+      .attr("opacity", 0.7);
   }
 
   // Background fill (fallback behind basemap)
