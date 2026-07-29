@@ -2,9 +2,7 @@
 """Generate a self-contained Row Crop Intelligence & Data Dashboard HTML for a grower."""
 
 import argparse
-import base64
 import csv
-import math
 import gzip
 import io
 import json
@@ -409,58 +407,7 @@ def download_d3():
         return local_d3.read_text()
     raise RuntimeError("Could not download D3 from any CDN and no local fallback found")
 
-def compute_all_fields_bbox(fields):
-    """Compute [min_lon, min_lat, max_lon, max_lat] across all fields."""
-    all_lons, all_lats = [], []
-    for f in fields:
-        geo = f.get("geometry", {}).get("geometry")
-        if not geo:
-            continue
-        coords = geo.get("coordinates", [])
-        if geo["type"] == "Polygon":
-            for c in coords[0]:
-                all_lons.append(c[0])
-                all_lats.append(c[1])
-        elif geo["type"] == "MultiPolygon":
-            for poly in coords:
-                for c in poly[0]:
-                    all_lons.append(c[0])
-                    all_lats.append(c[1])
-    if not all_lons:
-        return [-88.5, 40.5, -87.5, 41.5]
-    return [min(all_lons), min(all_lats), max(all_lons), max(all_lats)]
 
-def _merc(lon, lat):
-    r = 6378137
-    return (math.radians(lon) * r, math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)) * r)
-
-def fetch_static_map(bbox):
-    """Fetch ESRI World Imagery for the given WGS84 bbox, return base64 data URI."""
-    min_lon, min_lat, max_lon, max_lat = bbox
-    pad_lon = max((max_lon - min_lon) * 0.40, 0.005)
-    pad_lat = max((max_lat - min_lat) * 0.40, 0.005)
-    pl, pb, pr, pt = min_lon - pad_lon, min_lat - pad_lat, max_lon + pad_lon, max_lat + pad_lat
-    mx1, my1 = _merc(pl, pb)
-    mx2, my2 = _merc(pr, pt)
-    mw, mh = mx2 - mx1, my2 - my1
-    target_w = 1600
-    target_h = max(1, int(target_w * mh / mw))
-    url = (
-        f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
-        f"?bbox={pl},{pb},{pr},{pt}"
-        f"&bboxSR=4326&size={target_w},{target_h}&imageSR=102100"
-        f"&format=jpg&f=image"
-    )
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = resp.read()
-            b64 = base64.b64encode(data).decode("ascii")
-            print(f"  Static map fetched: {len(data) / 1024:.0f} KB")
-            return f"data:image/jpeg;base64,{b64}"
-    except Exception as e:
-        print(f"  Warning: could not fetch static map ({e})")
-        return ""
 
 def build_html(data_json_str, d3_min_js):
     config = CROP_CONFIG["corn"]
@@ -477,15 +424,6 @@ def build_html(data_json_str, d3_min_js):
     generated_at = data['summary']['generated_at']
     declining_count = data['summary']['declining_count']
 
-    # Compute all-field bounding box and fetch static basemap
-    bbox = compute_all_fields_bbox(data['fields'])
-    map_b64 = fetch_static_map(bbox)
-    map_bbox_json = json.dumps(bbox)
-
-    # ------------------------------------------------------------------
-    # Build the HTML using a regular string with .replace() substitutions.
-    # This avoids Python f-string / JavaScript brace conflicts.
-    # ------------------------------------------------------------------
     template = HTML_TEMPLATE
     template = template.replace("__D3_MIN_JS__", d3_min_js)
     template = template.replace("__GROWER_NAME__", grower_name)
@@ -497,8 +435,6 @@ def build_html(data_json_str, d3_min_js):
     template = template.replace("__CONFIG_JSON__", config_json)
     template = template.replace("__THRESHOLD_LABELS_JSON__", threshold_labels_json)
     template = template.replace("__CROP_CONFIG_JSON__", crop_config_json)
-    template = template.replace("__MAP_BASE64__", map_b64)
-    template = template.replace("__MAP_BBOX__", map_bbox_json)
     return template
 
 
@@ -682,8 +618,6 @@ const CONFIG = CROP_CONFIG.corn;
 const THRESHOLD_LABELS = __THRESHOLD_LABELS_JSON__;
 const ALL_FIELDS = __FIELDS_JSON__;
 const SUMMARY = __SUMMARY_JSON__;
-const MAP_BASE64 = '__MAP_BASE64__';
-const MAP_BBOX = __MAP_BBOX__;
 
 // ===== ICONS =====
 const ICONS = {
@@ -1352,113 +1286,78 @@ function renderMap() {
 
   var mapGroup = svg.append("g").attr("class", "map-group");
 
-  // Projection from ALL corn fields (fixed — doesn't change per field selection)
-  var lons = [], lats = [];
-  allCornFields.forEach(function(f) {
-    var geo = f.geometry.geometry;
-    if (geo.type === "Polygon") geo.coordinates[0].forEach(function(c) { lons.push(c[0]); lats.push(c[1]); });
-    else if (geo.type === "MultiPolygon") geo.coordinates.forEach(function(p) { p[0].forEach(function(c) { lons.push(c[0]); lats.push(c[1]); }); });
-  });
-  if (!lons.length) return;
-  var cLon = (d3.min(lons) + d3.max(lons)) / 2, cLat = (d3.min(lats) + d3.max(lats)) / 2;
-
-  var allGeoBounds = {
+  // Projection from ALL corn fields (fixed)
+  var geoCollection = {
     type: "FeatureCollection",
-    features: allCornFields.map(function(f) { return { type: "Feature", geometry: f.geometry.geometry, properties: {} }; })
+    features: allCornFields.map(function(f) {
+      return { type: "Feature", geometry: f.geometry.geometry, properties: {} };
+    })
   };
 
   var projection = d3.geoMercator()
-    .center([cLon, cLat])
-    .fitExtent([[20, 20], [width - 20, height - 20]], allGeoBounds);
+    .fitExtent([[30, 30], [width - 30, height - 30]], geoCollection);
   var geoPath = d3.geoPath().projection(projection);
 
-  // Static basemap fills SVG viewport (or grey fallback)
-  if (MAP_BASE64) {
-    mapGroup.append("image")
-      .attr("x", 0).attr("y", 0)
-      .attr("width", width).attr("height", height)
-      .attr("preserveAspectRatio", "xMidYMid slice")
-      .attr("href", MAP_BASE64)
-      .attr("opacity", 0.7);
-  } else {
-    mapGroup.append("rect")
-      .attr("x", 0).attr("y", 0).attr("width", width).attr("height", height)
-      .attr("fill", "#e8f0f8");
-  }
-
-  // Draw ALL corn fields — show only selected, hide others
+  // Choropleth: draw field polygons filled by risk tier
   allCornFields.forEach(function(f) {
     var visible = selectedIds.length === 0 || selectedIds.includes(f.id);
-    var color = visible ? (THRESHOLD_LABELS[f.current_risk]?.color || "#999") : "none";
+    var fillColor = visible ? (THRESHOLD_LABELS[f.current_risk]?.color || "#999") : "#e0e0e0";
+    var strokeColor = visible ? "#fff" : "none";
+    var strokeW = visible ? 1.5 : 0;
     var fieldName = f.name, fieldRisk = f.current_risk, fieldNdvi = f.current_ndvi, fieldAcres = f.area_acres;
     var fieldId = f.id;
-    // Fill path — risk tier color, no stroke
+
     var fp = mapGroup.append("path")
       .datum(f.geometry.geometry)
       .attr("d", geoPath)
-      .attr("fill", color)
-      .attr("stroke", "none")
-      .attr("opacity", visible ? 0.85 : 0)
-      .style("pointer-events", visible ? "auto" : "none")
+      .attr("fill", fillColor)
+      .attr("stroke", strokeColor)
+      .attr("stroke-width", strokeW)
+      .attr("opacity", visible ? 0.9 : 0.3)
       .style("cursor", visible ? "pointer" : "default");
-    // Outline path — neon green border, no fill (sits on top)
-    var op = mapGroup.append("path")
-      .datum(f.geometry.geometry)
-      .attr("d", geoPath)
-      .attr("fill", "none")
-      .attr("stroke", visible ? "#39FF14" : "none")
-      .attr("stroke-width", visible ? 3.5 : 0)
-      .attr("opacity", visible ? 1 : 0)
-      .style("pointer-events", "none");
+
     if (!visible) return;
+
     fp.on("mouseenter", function(event) {
-      op.attr("stroke-width", 6);
+      d3.select(this).attr("stroke-width", 3).attr("stroke", "#333");
       tooltip.classed("visible", true)
         .html("<strong>" + fieldName + " (" + fieldId + ")</strong><br>Risk: " + fieldRisk + "<br>NDVI: " + (fieldNdvi || '--') + "<br>Area: " + fieldAcres + " ac")
         .style("left", (event.pageX + 12) + "px")
         .style("top", (event.pageY - 28) + "px");
     })
     .on("mouseleave", function() {
-      op.attr("stroke-width", 3.5);
+      d3.select(this).attr("stroke-width", 1.5).attr("stroke", "#fff");
       tooltip.classed("visible", false);
     })
     .on("click", function() {
       state.filters.fieldIds = [fieldId];
       syncFilters();
     });
+
+    // Field label at centroid
+    var centroid = geoPath.centroid(f.geometry.geometry);
+    mapGroup.append("text")
+      .attr("x", centroid[0])
+      .attr("y", centroid[1])
+      .attr("text-anchor", "middle")
+      .attr("dy", "0.35em")
+      .attr("font-size", "10px")
+      .attr("font-weight", "600")
+      .attr("fill", "#fff")
+      .attr("paint-order", "stroke")
+      .attr("stroke", "#333")
+      .attr("stroke-width", "2px")
+      .style("pointer-events", "none")
+      .text(fieldName + " (" + (fieldNdvi != null ? fieldNdvi.toFixed(2) : '--') + ")");
   });
 
   // Zoom behavior
   var zoom = d3.zoom()
     .scaleExtent([1, 30])
-    .translateExtent([[0, 0], [width, height]])
     .on("zoom", function(event) {
       mapGroup.attr("transform", event.transform);
     });
   svg.call(zoom);
-
-  // Zoom to visible fields
-  var fitFields = visibleFields;
-  var fitGeoBounds = {
-    type: "FeatureCollection",
-    features: fitFields.map(function(f) { return { type: "Feature", geometry: f.geometry.geometry, properties: {} }; })
-  };
-  var fb = geoPath.bounds(fitGeoBounds);
-  var bx = fb[0][0], by = fb[0][1];
-  var bw = fb[1][0] - bx, bh = fb[1][1] - by;
-  if (bw > 0 && bh > 0) {
-    var pad = 0.10;
-    var s = Math.min((width * (1 - pad * 2)) / bw, (height * (1 - pad * 2)) / bh);
-    if (s > 1.05) {
-      var tx = width / 2 - (bx + bw / 2) * s;
-      var ty = height / 2 - (by + bh / 2) * s;
-      svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(s));
-    } else {
-      svg.call(zoom.transform, d3.zoomIdentity);
-    }
-  } else {
-    svg.call(zoom.transform, d3.zoomIdentity);
-  }
 
   // HTML legend
   var legendEl = document.getElementById("map-legend");
