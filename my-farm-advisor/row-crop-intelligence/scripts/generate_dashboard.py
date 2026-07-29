@@ -935,6 +935,8 @@ function renderNDVITimeSeries() {
   const xScale = d3.scaleTime().domain(xExtent).range([0, width]);
   const yScale = d3.scaleLinear().domain(yExtent).range([height, 0]);
 
+  const colorScale = d3.scaleOrdinal(d3.schemeTableau10).domain(ff.map(f => f.id));
+
   svg.append("line")
     .attr("x1", 0).attr("x2", width)
     .attr("y1", yScale(CONFIG.stress_threshold)).attr("y2", yScale(CONFIG.stress_threshold))
@@ -1079,7 +1081,7 @@ function renderNDVITimeSeries() {
     svg.append("path")
       .datum(series)
       .attr("fill", "none")
-      .attr("stroke", THRESHOLD_LABELS[f.current_risk]?.color || "#999")
+      .attr("stroke", colorScale(f.id))
       .attr("stroke-width", 2)
       .attr("opacity", 0.8)
       .attr("d", line)
@@ -1103,25 +1105,22 @@ function renderNDVITimeSeries() {
           .style("top", (event.pageY - 28) + "px");
       });
 
-    // Tier color legend above plot area
+    // Per-field color legend above plot area
     if (i === 0) {
       var legend = svg.append("g")
         .attr("transform", "translate(4, -12)")
         .attr("font-size", "10px");
-      ["critical", "watch", "healthy"].forEach(function(tier, j) {
-        var t = THRESHOLD_LABELS[tier];
-        var count = ff.filter(function(fi) { return fi.current_risk === tier; }).length;
-        if (!count) return;
+      ff.forEach(function(fi, j) {
         var row = legend.append("g")
           .attr("transform", "translate(0, " + (j * 16) + ")");
         row.append("rect")
           .attr("width", 10).attr("height", 10)
-          .attr("fill", t.color)
+          .attr("fill", colorScale(fi.id))
           .attr("rx", 2);
         row.append("text")
           .attr("x", 16).attr("y", 9)
           .attr("fill", "#333")
-          .text(t.label + " (" + count + ")");
+          .text(fi.name);
       });
     }
   });
@@ -1489,6 +1488,7 @@ function renderGDD() {
     .attr("text-anchor", "end").attr("font-size", "10px").attr("fill", "#777")
     .text("Normal: " + normalGDD + " \u00b0F-days");
 
+  var gddColorScale = d3.scaleOrdinal(d3.schemeTableau10).domain(ff.map(f => f.id));
   const line = d3.line()
     .x(d => xScale(d.date))
     .y(d => yScale(d.gdd));
@@ -1500,7 +1500,7 @@ function renderGDD() {
     svg.append("path")
       .datum(fd.current)
       .attr("fill", "none")
-      .attr("stroke", colorScale(fd.id))
+      .attr("stroke", gddColorScale(fd.id))
       .attr("stroke-width", 2)
       .attr("opacity", 0.7)
       .attr("d", line)
