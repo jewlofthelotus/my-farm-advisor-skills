@@ -517,11 +517,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 .narrative h3 { font-size: 0.95rem; font-weight: 600; margin-bottom: 10px; color: #333; }
 .narrative p { font-size: 0.85rem; margin-bottom: 8px; color: #444; line-height: 1.6; }
 
-.footer { background: #fff; border-radius: 8px; padding: 16px 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); font-size: 0.8rem; color: #777; display: flex; flex-wrap: wrap; gap: 24px; }
-.footer h4 { font-size: 0.8rem; font-weight: 600; color: #555; margin-bottom: 4px; }
-.footer .legend-item { display: inline-flex; align-items: center; gap: 6px; margin-right: 16px; }
-.footer .legend-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; }
-.footer .legend-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; }
+.footer { background: linear-gradient(135deg, #1e3a5f, #2a5a7f); color: #c8d8e8; font-size: 0.8rem; border-radius: 8px; padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.footer a { color: #F5D76E; text-decoration: none; }
+.footer a:hover { text-decoration: underline; }
+.footer .footer-disclaimer { font-size: 0.72rem; color: #8899aa; text-align: center; max-width: 500px; }
 
 svg.icon { width: 16px; height: 16px; fill: currentColor; vertical-align: middle; }
 svg.icon-lg { width: 24px; height: 24px; }
@@ -539,6 +538,7 @@ svg.icon-lg { width: 24px; height: 24px; }
   .map-action-row { grid-template-columns: 1fr; }
   .header .header-main { flex-direction: column; }
   .header .header-filters { flex-wrap: wrap; }
+  .footer { flex-direction: column; text-align: center; gap: 8px; }
 }
 </style>
 </head>
@@ -1749,7 +1749,11 @@ function renderNarrative() {
 
 // ===== FOOTER =====
 function renderFooter() {
-  d3.select("#footer-section").html("");
+  var html =
+    '<div><a href="https://midigitalvit.com" target="_blank" rel="noopener">MiDigitalVit</a></div>' +
+    '<div class="footer-disclaimer">This dashboard is a decision-support tool based on remote sensing and modeled data. Field conditions should be verified on-site before acting on any recommendation.</div>' +
+    '<div>&copy; 2026 MiDigitalVit</div>';
+  d3.select("#footer-section").html(html);
 }
 
 // ===== HEADER LEGEND =====
