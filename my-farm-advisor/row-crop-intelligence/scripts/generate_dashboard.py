@@ -775,7 +775,7 @@ function syncFilters() {
   var fieldSelect = document.getElementById("field-select");
   fieldSelect.innerHTML = '<option value="">All Corn Fields</option>' + cornFields.map(function(f) {
     var sel = f.id === selectedId;
-    return '<option value="' + f.id + '"' + (sel ? ' selected' : '') + '>' + f.name + ' (' + f.id + ')</option>';
+    return '<option value="' + f.id + '"' + (sel ? ' selected' : '') + '>' + f.name + '</option>';
   }).join('');
 
   var refIds = selectedId ? [selectedId] : validIds;
@@ -912,7 +912,7 @@ function renderNDVITimeSeries() {
   if (!ff.length) return;
 
   const rect = container.node().getBoundingClientRect();
-  const margin = { top: 20, right: 20, bottom: 40, left: 50 };
+  const margin = { top: 20, right: 20, bottom: 50, left: 50 };
   const width = rect.width - margin.left - margin.right;
   const height = rect.height - margin.top - margin.bottom;
 
@@ -934,8 +934,6 @@ function renderNDVITimeSeries() {
 
   const xScale = d3.scaleTime().domain(xExtent).range([0, width]);
   const yScale = d3.scaleLinear().domain(yExtent).range([height, 0]);
-
-  const colorScale = d3.scaleOrdinal(d3.schemeTableau10).domain(ff.map(f => f.id));
 
   svg.append("line")
     .attr("x1", 0).attr("x2", width)
@@ -1061,7 +1059,8 @@ function renderNDVITimeSeries() {
     .call(d3.axisBottom(xScale).ticks(8));
 
   svg.append("text").attr("class", "chart-title")
-    .attr("x", -32).attr("y", 12).attr("transform", "rotate(-90)")
+    .attr("x", -(height / 2)).attr("y", -(margin.left - 14))
+    .attr("transform", "rotate(-90)").attr("text-anchor", "middle")
     .text("NDVI");
 
   const line = d3.line()
@@ -1080,7 +1079,7 @@ function renderNDVITimeSeries() {
     svg.append("path")
       .datum(series)
       .attr("fill", "none")
-      .attr("stroke", colorScale(f.id))
+      .attr("stroke", THRESHOLD_LABELS[f.current_risk]?.color || "#999")
       .attr("stroke-width", 2)
       .attr("opacity", 0.8)
       .attr("d", line)
@@ -1104,22 +1103,25 @@ function renderNDVITimeSeries() {
           .style("top", (event.pageY - 28) + "px");
       });
 
-    // Color legend (replaces per-line end labels to avoid overlap)
+    // Tier color legend above plot area
     if (i === 0) {
       var legend = svg.append("g")
-        .attr("transform", "translate(4, 4)")
+        .attr("transform", "translate(4, -12)")
         .attr("font-size", "10px");
-      ff.forEach(function(fi, j) {
+      ["critical", "watch", "healthy"].forEach(function(tier, j) {
+        var t = THRESHOLD_LABELS[tier];
+        var count = ff.filter(function(fi) { return fi.current_risk === tier; }).length;
+        if (!count) return;
         var row = legend.append("g")
           .attr("transform", "translate(0, " + (j * 16) + ")");
         row.append("rect")
           .attr("width", 10).attr("height", 10)
-          .attr("fill", colorScale(fi.id))
+          .attr("fill", t.color)
           .attr("rx", 2);
         row.append("text")
           .attr("x", 16).attr("y", 9)
           .attr("fill", "#333")
-          .text(fi.name);
+          .text(t.label + " (" + count + ")");
       });
     }
   });
@@ -1200,7 +1202,7 @@ function renderNDVIvsAWC() {
   if (!ff.length) return;
 
   const rect = container.node().getBoundingClientRect();
-  const margin = { top: 20, right: 20, bottom: 40, left: 50 };
+  const margin = { top: 20, right: 20, bottom: 50, left: 50 };
   const width = rect.width - margin.left - margin.right;
   const height = rect.height - margin.top - margin.bottom;
 
@@ -1223,7 +1225,9 @@ function renderNDVIvsAWC() {
   svg.append("text").attr("class", "chart-title")
     .attr("x", width / 2).attr("y", height + 25).text("AWS (in)");
   svg.append("text").attr("class", "chart-title")
-    .attr("x", -32).attr("y", 12).attr("transform", "rotate(-90)").text("NDVI");
+    .attr("x", -(height / 2)).attr("y", -(margin.left - 14))
+    .attr("transform", "rotate(-90)").attr("text-anchor", "middle")
+    .text("NDVI");
 
   const r = Math.min(12, width / ff.length * 0.8);
   ff.forEach(f => {
@@ -1449,7 +1453,7 @@ function renderGDD() {
   });
 
   const rect = container.node().getBoundingClientRect();
-  const margin = { top: 20, right: 20, bottom: 40, left: 50 };
+  const margin = { top: 20, right: 20, bottom: 50, left: 50 };
   const width = rect.width - margin.left - margin.right;
   const height = rect.height - margin.top - margin.bottom;
 
@@ -1472,7 +1476,9 @@ function renderGDD() {
     .call(d3.axisBottom(xScale).ticks(d3.timeMonth).tickFormat(d3.timeFormat("%b")));
 
   svg.append("text").attr("class", "chart-title")
-    .attr("x", -32).attr("y", 12).attr("transform", "rotate(-90)").text("GDD (&deg;F-days)");
+    .attr("x", -(height / 2)).attr("y", -(margin.left - 14))
+    .attr("transform", "rotate(-90)").attr("text-anchor", "middle")
+    .text("GDD (\u00b0F-days)");
 
   svg.append("line")
     .attr("x1", 0).attr("x2", width)
@@ -1481,9 +1487,8 @@ function renderGDD() {
   svg.append("text")
     .attr("x", width).attr("y", yScale(normalGDD) - 4)
     .attr("text-anchor", "end").attr("font-size", "10px").attr("fill", "#777")
-    .text("Normal: " + normalGDD + " &deg;F-days");
+    .text("Normal: " + normalGDD + " \u00b0F-days");
 
-  const colorScale = d3.scaleOrdinal(d3.schemeTableau10).domain(ff.map(f => f.id));
   const line = d3.line()
     .x(d => xScale(d.date))
     .y(d => yScale(d.gdd));
@@ -1633,14 +1638,15 @@ function renderActionList() {
     var action = '';
     if (f.current_risk === 'critical') {
       action = 'Scout immediately.';
-      if (f.ndvi_trend === 'declining') action += ' NDVI declining (' + (f.ndvi_trend_pct >= 0 ? '+' : '') + f.ndvi_trend_pct + ').';
-      if (f.soil?.awc_in_in != null) action += ' AWS ' + f.soil.awc_in_in.toFixed(2) + ' in.';
+      if (f.ndvi_trend === 'declining') action += ' Declining trend warrants priority.';
+      if (f.soil?.awc_in_in != null && f.soil.awc_in_in < 1.0) action += ' Low AWS increases drought risk.';
+      if (f.weather_summary?.days_since_significant_rain > 10) action += ' Extended dry period.';
       action += ' Consider irrigation or tissue sampling.';
     } else {
       action = 'Monitor weekly.';
-      if (f.ndvi_trend !== 'stable') action += ' NDVI ' + f.ndvi_trend + ' (' + (f.ndvi_trend_pct >= 0 ? '+' : '') + f.ndvi_trend_pct + ').';
-      if (f.weather_summary?.days_since_significant_rain > 7) action += ' ' + f.weather_summary.days_since_significant_rain + 'd no rain.';
-      action += ' Check soil moisture and NDVI trend.';
+      if (f.soil?.awc_in_in != null && f.soil.awc_in_in < 1.0) action += ' Low AWS raises drought sensitivity.';
+      if (f.weather_summary?.days_since_significant_rain > 10) action += ' Extended dry period.';
+      action += ' Check soil moisture and NDVI trend next week.';
     }
 
     html += '<div class="action-item">' +
