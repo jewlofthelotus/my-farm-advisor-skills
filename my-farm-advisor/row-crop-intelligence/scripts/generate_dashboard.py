@@ -493,9 +493,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 
 .map-card { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 16px; }
 .map-card h3 { font-size: 0.95rem; font-weight: 600; margin-bottom: 10px; color: #333; }
-.map-card h3 .map-legend { float: right; font-size: 0.7rem; font-weight: 400; display: flex; gap: 12px; }
-.map-card h3 .map-legend .legend-item { display: inline-flex; align-items: center; gap: 4px; }
-.map-card h3 .map-legend .legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.map-card h3 .map-legend, .chart-card h3 .map-legend { float: right; font-size: 0.7rem; font-weight: 400; display: flex; gap: 12px; }
+.map-card h3 .map-legend .legend-item, .chart-card h3 .map-legend .legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.map-card h3 .map-legend .legend-swatch, .chart-card h3 .map-legend .legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
 .map-card .map-container { width: 100%; height: 500px; position: relative; background: #f0f4f8; border-radius: 4px; overflow: hidden; }
 .map-card .map-container svg { width: 100%; height: 100%; display: block; }
 .map-zoom-controls { position: absolute; bottom: 12px; left: 12px; display: flex; flex-direction: column; gap: 4px; z-index: 10; }
@@ -840,6 +840,17 @@ function syncFilters() {
 // ===== TOOLTIP =====
 const tooltip = d3.select("#tooltip");
 
+function showTooltip(html, pageX, pageY) {
+  tooltip.classed("visible", true).html(html);
+  var rect = tooltip.node().getBoundingClientRect();
+  var tw = rect.width, th = rect.height;
+  var left = pageX + 12;
+  var top = pageY - 28;
+  if (left + tw > window.innerWidth - 10) left = pageX - tw - 12;
+  if (top < 10) top = pageY + 12;
+  tooltip.style("left", left + "px").style("top", top + "px");
+}
+
 // ===== KPI RENDER =====
 function renderKPIs() {
   const ff = state.getFilteredFields();
@@ -1115,29 +1126,23 @@ function renderNDVITimeSeries() {
 
     svg.append("path")
       .datum(series)
+      .attr("data-field-id", f.id)
+      .attr("data-default-sw", 2)
+      .attr("data-default-op", 0.8)
       .attr("fill", "none")
       .attr("stroke", colorScale(f.id))
       .attr("stroke-width", 2)
       .attr("opacity", 0.8)
       .attr("d", line)
       .style("cursor", "pointer")
-      .on("mouseenter", function(event) {
-        d3.select(this).attr("stroke-width", 4).attr("opacity", 1);
-        tooltip.classed("visible", true)
-          .html(ndviTip)
-          .style("left", (event.pageX + 12) + "px")
-          .style("top", (event.pageY - 28) + "px");
-      })
-      .on("mouseleave", function() {
-        d3.select(this).attr("stroke-width", 2).attr("opacity", 0.8);
-        tooltip.classed("visible", false);
-      })
       .on("click", function(event) {
         event.stopPropagation();
-        tooltip.classed("visible", true)
-          .html(ndviTip)
-          .style("left", (event.pageX + 12) + "px")
-          .style("top", (event.pageY - 28) + "px");
+        svg.selectAll("path[data-field-id]").each(function() {
+          var p = d3.select(this);
+          p.attr("stroke-width", p.attr("data-default-sw")).attr("opacity", p.attr("data-default-op"));
+        });
+        d3.select(this).attr("stroke-width", 4).attr("opacity", 1);
+        showTooltip(ndviTip, event.pageX, event.pageY);
       });
 
     // HTML legend (like map legend)
@@ -1145,9 +1150,31 @@ function renderNDVITimeSeries() {
       var legendEl = document.getElementById("ndvi-legend");
       legendEl.innerHTML = "";
       ff.forEach(function(fi) {
+        var lastPt = fi.ndvi_series.length ? fi.ndvi_series[fi.ndvi_series.length - 1] : null;
+        var trendInfo = lastPt ? computeNDVITrend(fi.ndvi_series) : null;
+        var tipHtml = lastPt && trendInfo
+          ? "<strong>" + fi.name + " (" + fi.id + ")</strong><br>Latest NDVI: " + lastPt.value.toFixed(3) + " on " + lastPt.date + "<br>Trend: " + trendInfo.trend + " (" + (trendInfo.pct >= 0 ? '+' : '') + trendInfo.pct + ")"
+          : "<strong>" + fi.name + " (" + fi.id + ")</strong><br>No NDVI data";
         var item = document.createElement("span");
         item.className = "legend-item";
+        item.style.cursor = "pointer";
         item.innerHTML = '<span class="legend-swatch" style="background:' + colorScale(fi.id) + '"></span>' + fi.name;
+        (function(fid, fSeries) {
+          item.addEventListener("click", function(event) {
+            event.stopPropagation();
+            svg.selectAll("path[data-field-id]").each(function() {
+              var p = d3.select(this);
+              p.attr("stroke-width", p.attr("data-default-sw")).attr("opacity", p.attr("data-default-op"));
+            });
+            svg.select('path[data-field-id="' + fid + '"]').attr("stroke-width", 4).attr("opacity", 1);
+            var svgNode = document.querySelector("#ndvi-time-series svg");
+            var svgRect = svgNode.getBoundingClientRect();
+            var pt = fSeries[fSeries.length - 1];
+            var tipX = svgRect.left + window.scrollX + margin.left + xScale(new Date(pt.date));
+            var tipY = svgRect.top + window.scrollY + margin.top + yScale(pt.value);
+            showTooltip(tipHtml, tipX, tipY);
+          });
+        })(fi.id, fi.ndvi_series);
         legendEl.appendChild(item);
       });
     }
@@ -1189,25 +1216,16 @@ function renderFieldRanking() {
       .attr("height", yScale.bandwidth())
       .attr("fill", color)
       .attr("rx", 3)
+      .attr("data-default-op", 0.85)
       .attr("opacity", 0.85)
       .style("cursor", "pointer")
-      .on("mouseenter", function(event) {
-        d3.select(this).attr("opacity", 1);
-        tooltip.classed("visible", true)
-          .html(barTip)
-          .style("left", (event.pageX + 12) + "px")
-          .style("top", (event.pageY - 28) + "px");
-      })
-      .on("mouseleave", function() {
-        d3.select(this).attr("opacity", 0.85);
-        tooltip.classed("visible", false);
-      })
       .on("click", function(event) {
         event.stopPropagation();
-        tooltip.classed("visible", true)
-          .html(barTip)
-          .style("left", (event.pageX + 12) + "px")
-          .style("top", (event.pageY - 28) + "px");
+        svg.selectAll("rect").each(function() {
+          d3.select(this).attr("opacity", d3.select(this).attr("data-default-op"));
+        });
+        d3.select(this).attr("opacity", 1);
+        showTooltip(barTip, event.pageX, event.pageY);
       });
     svg.append("text")
       .attr("x", xScale(f.current_ndvi) - 4)
@@ -1265,26 +1283,20 @@ function renderNDVIvsAWC() {
       .attr("cy", yScale(f.current_ndvi))
       .attr("r", r)
       .attr("fill", color)
+      .attr("data-default-op", 0.7)
+      .attr("data-default-r", r)
       .attr("opacity", 0.7)
       .attr("stroke", "#fff")
       .attr("stroke-width", 1.5)
-      .on("mouseenter", function(event) {
-        d3.select(this).attr("opacity", 1).attr("r", r * 1.4);
-        tooltip.classed("visible", true)
-          .html(scatterTip)
-          .style("left", (event.pageX + 12) + "px")
-          .style("top", (event.pageY - 28) + "px");
-      })
-      .on("mouseleave", function() {
-        d3.select(this).attr("opacity", 0.7).attr("r", r);
-        tooltip.classed("visible", false);
-      })
+      .style("cursor", "pointer")
       .on("click", function(event) {
         event.stopPropagation();
-        tooltip.classed("visible", true)
-          .html(scatterTip)
-          .style("left", (event.pageX + 12) + "px")
-          .style("top", (event.pageY - 28) + "px");
+        svg.selectAll("circle").each(function() {
+          var c = d3.select(this);
+          c.attr("opacity", c.attr("data-default-op")).attr("r", c.attr("data-default-r"));
+        });
+        d3.select(this).attr("opacity", 1).attr("r", r * 1.4);
+        showTooltip(scatterTip, event.pageX, event.pageY);
       });
     svg.append("text")
       .attr("x", xScale(f.soil.awc_in_in))
@@ -1375,18 +1387,7 @@ function renderMap() {
 
     if (!visible) return;
 
-    fp.on("mouseenter", function(event) {
-      d3.select(this).attr("stroke-width", 3).attr("stroke", "#333");
-      tooltip.classed("visible", true)
-        .html("<strong>" + fieldName + " (" + fieldId + ")</strong><br>Risk: " + fieldRisk + "<br>NDVI: " + (fieldNdvi || '--') + "<br>Area: " + fieldAcres + " ac")
-        .style("left", (event.pageX + 12) + "px")
-        .style("top", (event.pageY - 28) + "px");
-    })
-    .on("mouseleave", function() {
-      d3.select(this).attr("stroke-width", useMarker ? 2 : 1.5).attr("stroke", "#fff");
-      tooltip.classed("visible", false);
-    })
-    .on("click", function() {
+    fp.on("click", function() {
       state.filters.fieldIds = [fieldId];
       syncFilters();
     });
@@ -1528,28 +1529,21 @@ function renderGDD() {
     svg.append("path")
       .datum(fd.current)
       .attr("fill", "none")
+      .attr("data-default-sw", 2)
+      .attr("data-default-op", 0.7)
       .attr("stroke", gddColorScale(fd.id))
       .attr("stroke-width", 2)
       .attr("opacity", 0.7)
       .attr("d", line)
       .style("cursor", "pointer")
-      .on("mouseenter", function(event) {
-        d3.select(this).attr("stroke-width", 4).attr("opacity", 1);
-        tooltip.classed("visible", true)
-          .html(gddTip)
-          .style("left", (event.pageX + 12) + "px")
-          .style("top", (event.pageY - 28) + "px");
-      })
-      .on("mouseleave", function() {
-        d3.select(this).attr("stroke-width", 2).attr("opacity", 0.7);
-        tooltip.classed("visible", false);
-      })
       .on("click", function(event) {
         event.stopPropagation();
-        tooltip.classed("visible", true)
-          .html(gddTip)
-          .style("left", (event.pageX + 12) + "px")
-          .style("top", (event.pageY - 28) + "px");
+        svg.selectAll("path").each(function() {
+          var p = d3.select(this);
+          p.attr("stroke-width", p.attr("data-default-sw")).attr("opacity", p.attr("data-default-op"));
+        });
+        d3.select(this).attr("stroke-width", 4).attr("opacity", 1);
+        showTooltip(gddTip, event.pageX, event.pageY);
       });
   });
 }
@@ -1592,25 +1586,16 @@ function renderSoil() {
       .attr("height", yScale.bandwidth())
       .attr("fill", color)
       .attr("rx", 3)
+      .attr("data-default-op", 0.85)
       .attr("opacity", 0.85)
       .style("cursor", "pointer")
-      .on("mouseenter", function(event) {
-        d3.select(this).attr("opacity", 1);
-        tooltip.classed("visible", true)
-          .html(soilTip)
-          .style("left", (event.pageX + 12) + "px")
-          .style("top", (event.pageY - 28) + "px");
-      })
-      .on("mouseleave", function() {
-        d3.select(this).attr("opacity", 0.85);
-        tooltip.classed("visible", false);
-      })
       .on("click", function(event) {
         event.stopPropagation();
-        tooltip.classed("visible", true)
-          .html(soilTip)
-          .style("left", (event.pageX + 12) + "px")
-          .style("top", (event.pageY - 28) + "px");
+        svg.selectAll("rect").each(function() {
+          d3.select(this).attr("opacity", d3.select(this).attr("data-default-op"));
+        });
+        d3.select(this).attr("opacity", 1);
+        showTooltip(soilTip, event.pageX, event.pageY);
       });
     svg.append("text")
       .attr("x", xScale(f.soil.om_pct) - 4)
@@ -1805,6 +1790,17 @@ state.subscribe(renderAll);
 
 document.addEventListener("click", function() {
   tooltip.classed("visible", false);
+  d3.selectAll("[data-default-sw]").each(function() {
+    var el = d3.select(this);
+    el.attr("stroke-width", el.attr("data-default-sw")).attr("opacity", el.attr("data-default-op"));
+  });
+  d3.selectAll("[data-default-op]:not([data-default-sw])").each(function() {
+    var el = d3.select(this);
+    el.attr("opacity", el.attr("data-default-op"));
+  });
+  d3.selectAll("[data-default-r]").each(function() {
+    d3.select(this).attr("r", d3.select(this).attr("data-default-r"));
+  });
 });
 
 document.getElementById("reset-btn").addEventListener("click", resetFilters);
