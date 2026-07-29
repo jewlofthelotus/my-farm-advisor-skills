@@ -912,7 +912,7 @@ function renderNDVITimeSeries() {
   if (!ff.length) return;
 
   const rect = container.node().getBoundingClientRect();
-  const margin = { top: 20, right: 20, bottom: 50, left: 50 };
+  const margin = { top: 20, right: 20, bottom: 50, left: 60 };
   const width = rect.width - margin.left - margin.right;
   const height = rect.height - margin.top - margin.bottom;
 
@@ -1194,7 +1194,7 @@ function renderNDVIvsAWC() {
   if (!ff.length) return;
 
   const rect = container.node().getBoundingClientRect();
-  const margin = { top: 20, right: 20, bottom: 50, left: 50 };
+  const margin = { top: 20, right: 20, bottom: 50, left: 60 };
   const width = rect.width - margin.left - margin.right;
   const height = rect.height - margin.top - margin.bottom;
 
@@ -1445,7 +1445,7 @@ function renderGDD() {
   });
 
   const rect = container.node().getBoundingClientRect();
-  const margin = { top: 20, right: 20, bottom: 50, left: 50 };
+  const margin = { top: 20, right: 20, bottom: 50, left: 60 };
   const width = rect.width - margin.left - margin.right;
   const height = rect.height - margin.top - margin.bottom;
 
