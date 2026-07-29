@@ -1093,7 +1093,7 @@ function renderNDVITimeSeries() {
   var displayYear = state.filters.selectedYear;
   var chartStart = xScale.domain()[0], chartEnd = xScale.domain()[1];
   var weatherField = ff[0];
-  var dailyData = WEATHER_SERIES[weatherField.weather_series_id] || {dates: [], T2M_MAX: [], T2M_MIN: []};
+  var dailyData = state.getFilteredWeather(weatherField);
   if (dailyData.dates.length > 0) {
     // Determine planting date from last spring frost, fallback to April 20
     var frostThresholdC = 0.0;
@@ -1328,7 +1328,7 @@ function renderNDVIvsAWC() {
   if (!ff.length) return;
 
   const rect = container.node().getBoundingClientRect();
-  const margin = { top: 20, right: 20, bottom: 50, left: 60 };
+  const margin = { top: 20, right: 20, bottom: 60, left: 60 };
   const width = rect.width - margin.left - margin.right;
   const height = rect.height - margin.top - margin.bottom;
 
@@ -1349,7 +1349,7 @@ function renderNDVIvsAWC() {
     .call(d3.axisBottom(xScale).ticks(5));
 
   svg.append("text").attr("class", "chart-title")
-    .attr("x", width / 2).attr("y", height + 25).text("AWS (in)");
+    .attr("x", width / 2).attr("y", height + 32).text("AWS (in)");
   svg.append("text").attr("class", "chart-title")
     .attr("x", -(height / 2)).attr("y", -(margin.left - 14))
     .attr("transform", "rotate(-90)").attr("text-anchor", "middle")
@@ -1538,9 +1538,8 @@ function renderGDD() {
   const ff = state.getFilteredFields();
   if (!ff.length) return;
 
-  const displayYear = state.filters.selectedYear || String(new Date().getFullYear());
   const fieldData = ff.map(f => {
-    const daily = WEATHER_SERIES[f.weather_series_id] || {dates: [], T2M_MAX: [], T2M_MIN: []};
+    const daily = state.getFilteredWeather(f);
     const byDate = {};
     for (var i = 0; i < daily.dates.length; i++) {
       var tmax = +daily.T2M_MAX[i], tmin = +daily.T2M_MIN[i];
@@ -1553,10 +1552,7 @@ function renderGDD() {
     const currentSeries = [];
     sorted.forEach(([dt, val]) => {
       cum += val;
-      const y = dt.slice(0, 4);
-      if (y === displayYear) {
-        currentSeries.push({ date: dt, gdd: Math.round(cum) });
-      }
+      currentSeries.push({ date: dt, gdd: Math.round(cum) });
     });
     return { id: f.id, name: f.name, current: currentSeries };
   });
@@ -1600,7 +1596,7 @@ function renderGDD() {
 
   var gddColorScale = d3.scaleOrdinal(d3.schemeTableau10).domain(ff.map(f => f.id));
   const line = d3.line()
-    .x(d => xScale(d.date))
+    .x(d => xScale(new Date(d.date)))
     .y(d => yScale(d.gdd));
 
   fieldData.forEach(fd => {
@@ -1639,11 +1635,12 @@ function renderSoil() {
   const rect = container.node().getBoundingClientRect();
   const margin = { top: 10, right: 20, bottom: 20, left: 70 };
   const width = rect.width - margin.left - margin.right;
-  const height = Math.max(200, ff.length * 32) - margin.top - margin.bottom;
+  const baseHeight = Math.max(200, ff.length * 32);
+  const height = baseHeight - margin.top - margin.bottom;
 
   const svg = container.append("svg")
     .attr("width", width + margin.left + margin.right)
-    .attr("height", height + margin.top + margin.bottom)
+    .attr("height", baseHeight + 22)
     .append("g")
     .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
 
@@ -1690,7 +1687,7 @@ function renderSoil() {
   });
 
   svg.append("text").attr("class", "chart-title")
-    .attr("x", width / 2).attr("y", height + 16).text("Organic Matter (%)");
+    .attr("x", width / 2)    .attr("y", height + 27).text("Organic Matter (%)");
 }
 
 // ===== ACTION LIST =====
