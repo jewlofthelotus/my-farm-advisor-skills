@@ -568,7 +568,7 @@ svg.icon-lg { width: 24px; height: 24px; }
 
   <div class="chart-grid" id="ndvi-time-series-section">
     <div class="chart-card chart-full">
-      <h3 id="ndvi-declining-title">NDVI Declining in 0 Fields<span class="map-legend" id="ndvi-legend"></span></h3>
+      <h3 id="ndvi-declining-title">NDVI Declining in <span id="ndvi-declining-count">0</span> Fields<span class="map-legend" id="ndvi-legend"></span></h3>
       <div class="chart-container" id="ndvi-time-series"></div>
     </div>
   </div>
@@ -908,7 +908,7 @@ function renderNDVITimeSeries() {
   container.html("");
   const ff = state.getFilteredFields();
   var decliningCount = ff.filter(function(f) { return f.ndvi_trend === 'declining'; }).length;
-  d3.select("#ndvi-declining-title").text("NDVI Declining in " + decliningCount + " Fields");
+  d3.select("#ndvi-declining-count").text(decliningCount);
   if (!ff.length) return;
 
   const rect = container.node().getBoundingClientRect();
