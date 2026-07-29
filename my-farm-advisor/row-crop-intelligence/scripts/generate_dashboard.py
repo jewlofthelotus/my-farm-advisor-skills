@@ -1281,7 +1281,7 @@ function renderMap() {
 
   var mapGroup = svg.append("g").attr("class", "map-group");
 
-  // Projection from ALL corn fields (fixed)
+  // Projection from ALL corn fields (fixed) with proportional padding
   var geoCollection = {
     type: "FeatureCollection",
     features: allCornFields.map(function(f) {
@@ -1289,27 +1289,48 @@ function renderMap() {
     })
   };
 
+  var pad = Math.min(width, height) * 0.12;
   var projection = d3.geoMercator()
-    .fitExtent([[30, 30], [width - 30, height - 30]], geoCollection);
+    .fitExtent([[pad, pad], [width - pad, height - pad]], geoCollection);
   var geoPath = d3.geoPath().projection(projection);
 
-  // Choropleth: draw field polygons filled by risk tier
+  // Collect label positions for collision avoidance
+  var labelData = [];
+
+  // Draw fields — use markers for tiny polygons, true polygons otherwise
   allCornFields.forEach(function(f) {
     var visible = selectedIds.length === 0 || selectedIds.includes(f.id);
     var fillColor = visible ? (THRESHOLD_LABELS[f.current_risk]?.color || "#999") : "#e0e0e0";
-    var strokeColor = visible ? "#fff" : "none";
-    var strokeW = visible ? 1.5 : 0;
     var fieldName = f.name, fieldRisk = f.current_risk, fieldNdvi = f.current_ndvi, fieldAcres = f.area_acres;
     var fieldId = f.id;
+    var centroid = geoPath.centroid(f.geometry.geometry);
 
-    var fp = mapGroup.append("path")
-      .datum(f.geometry.geometry)
-      .attr("d", geoPath)
-      .attr("fill", fillColor)
-      .attr("stroke", strokeColor)
-      .attr("stroke-width", strokeW)
-      .attr("opacity", visible ? 0.9 : 0.3)
-      .style("cursor", visible ? "pointer" : "default");
+    // Check rendered polygon size
+    var pathBounds = geoPath.bounds(f.geometry.geometry);
+    var pw = pathBounds[1][0] - pathBounds[0][0];
+    var ph = pathBounds[1][1] - pathBounds[0][1];
+    var useMarker = (pw < 15 || ph < 15) && selectedIds.length !== 1;
+
+    var fp;
+    if (useMarker) {
+      fp = mapGroup.append("circle")
+        .attr("cx", centroid[0]).attr("cy", centroid[1])
+        .attr("r", 7)
+        .attr("fill", fillColor)
+        .attr("stroke", visible ? "#fff" : "none")
+        .attr("stroke-width", visible ? 2 : 0)
+        .attr("opacity", visible ? 0.9 : 0.3)
+        .style("cursor", visible ? "pointer" : "default");
+    } else {
+      fp = mapGroup.append("path")
+        .datum(f.geometry.geometry)
+        .attr("d", geoPath)
+        .attr("fill", fillColor)
+        .attr("stroke", visible ? "#fff" : "none")
+        .attr("stroke-width", visible ? 1.5 : 0)
+        .attr("opacity", visible ? 0.9 : 0.3)
+        .style("cursor", visible ? "pointer" : "default");
+    }
 
     if (!visible) return;
 
@@ -1321,7 +1342,7 @@ function renderMap() {
         .style("top", (event.pageY - 28) + "px");
     })
     .on("mouseleave", function() {
-      d3.select(this).attr("stroke-width", 1.5).attr("stroke", "#fff");
+      d3.select(this).attr("stroke-width", useMarker ? 2 : 1.5).attr("stroke", "#fff");
       tooltip.classed("visible", false);
     })
     .on("click", function() {
@@ -1329,11 +1350,25 @@ function renderMap() {
       syncFilters();
     });
 
-    // Field label at centroid
-    var centroid = geoPath.centroid(f.geometry.geometry);
+    labelData.push({ f: f, cx: centroid[0], cy: centroid[1] });
+  });
+
+  // Simple collision avoidance — offset overlapping labels vertically
+  for (var i = 0; i < labelData.length; i++) {
+    var oy = 0;
+    for (var j = 0; j < i; j++) {
+      var dx = labelData[i].cx - labelData[j].cx;
+      var dy = (labelData[i].cy + (labelData[i].oy || 0)) - (labelData[j].cy + (labelData[j].oy || 0));
+      if (Math.sqrt(dx*dx + dy*dy) < 36) oy += 16;
+    }
+    labelData[i].oy = oy;
+  }
+
+  // Render labels with collision offsets
+  labelData.forEach(function(ld) {
     mapGroup.append("text")
-      .attr("x", centroid[0])
-      .attr("y", centroid[1])
+      .attr("x", ld.cx)
+      .attr("y", ld.cy + (ld.oy || 0))
       .attr("text-anchor", "middle")
       .attr("dy", "0.35em")
       .attr("font-size", "10px")
@@ -1343,7 +1378,7 @@ function renderMap() {
       .attr("stroke", "#333")
       .attr("stroke-width", "2px")
       .style("pointer-events", "none")
-      .text(fieldName + " (" + (fieldNdvi != null ? fieldNdvi.toFixed(2) : '--') + ")");
+      .text(ld.f.name + " (" + (ld.f.current_ndvi != null ? ld.f.current_ndvi.toFixed(2) : '--') + ")");
   });
 
   // Zoom behavior
