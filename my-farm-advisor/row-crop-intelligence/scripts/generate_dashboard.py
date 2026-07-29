@@ -38,7 +38,7 @@ CROP_CONFIG = {
             "R3": 1880, "R4": 2150, "R5": 2450, "R6": 2700
         },
         "crop_name": "Corn",
-        "kpi_units": {"ndvi": "", "gdd": "\u00b0F-days", "precip": "in", "awc": "in/in", "om": "%"}
+        "kpi_units": {"ndvi": "", "gdd": "\u00b0F-days", "precip": "in", "awc": "in", "om": "%"}
     }
 }
 
@@ -645,7 +645,7 @@ svg.icon-lg { width: 24px; height: 24px; }
       <div class="chart-container" id="field-ranking"></div>
     </div>
     <div class="chart-card">
-      <h3>NDVI vs. Available Water Capacity</h3>
+      <h3>NDVI vs. Available Water Storage</h3>
       <div class="chart-container" id="ndvi-vs-awc"></div>
     </div>
   </div>
@@ -1282,14 +1282,14 @@ function renderNDVIvsAWC() {
     .call(d3.axisBottom(xScale).ticks(5));
 
   svg.append("text").attr("class", "chart-title")
-    .attr("x", width / 2).attr("y", height + 25).text("AWC (in/in)");
+    .attr("x", width / 2).attr("y", height + 25).text("AWS (in)");
   svg.append("text").attr("class", "chart-title")
     .attr("x", -32).attr("y", 12).attr("transform", "rotate(-90)").text("NDVI");
 
   const r = Math.min(12, width / ff.length * 0.8);
   ff.forEach(f => {
     const color = THRESHOLD_LABELS[f.current_risk]?.color || "#999";
-    const scatterTip = "<strong>" + f.name + " (" + f.id + ")</strong><br>NDVI: " + f.current_ndvi + "<br>AWC: " + f.soil.awc_in_in + " in/in<br>Risk: " + f.current_risk;
+    const scatterTip = "<strong>" + f.name + " (" + f.id + ")</strong><br>NDVI: " + f.current_ndvi + "<br>AWS: " + f.soil.awc_in_in + " in<br>Risk: " + f.current_risk;
     svg.append("circle")
       .attr("cx", xScale(f.soil.awc_in_in))
       .attr("cy", yScale(f.current_ndvi))
@@ -1613,7 +1613,7 @@ function renderSoil() {
 
   ff.forEach(f => {
     const color = THRESHOLD_LABELS[f.current_risk]?.color || "#7cb342";
-    const awcInfo = f.soil?.awc_in_in != null ? 'AWC: ' + f.soil.awc_in_in + ' in/in' : '';
+    const awcInfo = f.soil?.awc_in_in != null ? 'AWS: ' + f.soil.awc_in_in + ' in' : '';
     const drainInfo = f.soil?.drainage_class || '';
     const soilTip = "<strong>" + f.name + " (" + f.id + ")</strong><br>OM: " + f.soil.om_pct.toFixed(1) + "%" + (awcInfo ? '<br>' + awcInfo : '') + (drainInfo ? '<br>Drainage: ' + drainInfo : '');
     svg.append("rect")
@@ -1675,7 +1675,7 @@ function renderActionList() {
         var tierWeight = f.current_risk === 'critical' ? 100 : 50;
         var ndviPenalty = f.current_ndvi != null ? Math.max(0, (CONFIG.watch_threshold - f.current_ndvi) * 100) : 0;
         var trendPenalty = f.ndvi_trend === 'declining' ? Math.abs(f.ndvi_trend_pct || 0) * 2 : 0;
-        var awcPenalty = f.soil?.awc_in_in != null && f.soil.awc_in_in < 0.5 ? (0.5 - f.soil.awc_in_in) * 20 : 0;
+        var awcPenalty = f.soil?.awc_in_in != null && f.soil.awc_in_in < 1.0 ? (1.0 - f.soil.awc_in_in) * 10 : 0;
         var rainPenalty = (f.weather_summary?.days_since_significant_rain || 0) * 0.5;
         return tierWeight + ndviPenalty + trendPenalty + awcPenalty + rainPenalty;
       }
@@ -1720,7 +1720,7 @@ function renderNarrative() {
   const ndviAvg = ndviArr.length ? ndviArr.reduce((s, f) => s + f.current_ndvi, 0) / ndviArr.length : 0;
   const declining = ff.filter(f => f.ndvi_trend === 'declining').length;
   const improving = ff.filter(f => f.ndvi_trend === 'improving').length;
-  const lowAWC = ff.filter(f => f.soil?.awc_in_in != null && f.soil.awc_in_in < 0.5).length;
+  const lowAWC = ff.filter(f => f.soil?.awc_in_in != null && f.soil.awc_in_in < 1.0).length;
   const highOM = ff.filter(f => f.soil?.om_pct != null && f.soil.om_pct > 3).length;
   const awcVals = ff.filter(f => f.soil?.awc_in_in != null).map(f => f.soil.awc_in_in);
   const omVals = ff.filter(f => f.soil?.om_pct != null).map(f => f.soil.om_pct);
@@ -1738,18 +1738,18 @@ function renderNarrative() {
 
   html += '<p><strong>Field Health.</strong> Critical-risk fields typically combine below-threshold NDVI with declining trend. ';
   if (lowAWC > 0) {
-    html += '' + lowAWC + ' field(s) have low available water capacity (AWC < 0.5 in/in), which likely contributes to stress under dry conditions.';
+    html += '' + lowAWC + ' field(s) have low available water storage (AWS < 1.0 in), which likely contributes to stress under dry conditions.';
   } else {
-    html += 'Soil AWC across fields is adequate for current conditions.';
+    html += 'Soil AWS across fields is adequate for current conditions.';
   }
   if (highOM > 0) html += ' ' + highOM + ' field(s) have elevated organic matter (>3%), supporting better moisture retention.';
   html += '</p>';
 
   html += '<p><strong>Environmental & Soil Variation.</strong> Fields range from ' +
     (awcVals.length ? d3.min(awcVals).toFixed(2) : '--') + ' to ' + (awcVals.length ? d3.max(awcVals).toFixed(2) : '--') +
-    ' in/in AWC and ' + (omVals.length ? d3.min(omVals).toFixed(1) : '--') + '% to ' +
+    ' in AWS and ' + (omVals.length ? d3.min(omVals).toFixed(1) : '--') + '% to ' +
     (omVals.length ? d3.max(omVals).toFixed(1) : '--') +
-    '% organic matter. This variation directly correlates with NDVI differences -- the scatter plot of NDVI vs. AWC shows ' +
+    '% organic matter. This variation directly correlates with NDVI differences -- the scatter plot of NDVI vs. AWS shows ' +
     (scatterCount > 3 ? 'a visible positive relationship' : 'limited correlation given available datapoints') + '.</p>';
 
   html += '<p><strong>Decisions & Actions.</strong> Focus scouting on critical-risk fields first. ';
@@ -1783,7 +1783,7 @@ function renderFooter() {
       '<div style="font-size:0.75rem; color:#999;">' +
         'NDVI: mean per-scene from Sentinel-2/Landsat 8-9.<br>' +
         'GDD: base 50&deg;F from daily Tmin/Tmax<br>' +
-        'Soil: NRCS SSURGO (AWC, OM%)<br>' +
+        'Soil: NRCS SSURGO (AWS, OM%)<br>' +
         'Weather: NASA POWER daily' +
       '</div>' +
     '</div>' +
