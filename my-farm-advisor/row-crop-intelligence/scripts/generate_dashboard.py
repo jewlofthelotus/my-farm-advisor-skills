@@ -1453,16 +1453,13 @@ function renderGDD() {
   const maxGDD = Math.max(normalGDD, ...fieldData.map(f => f.current.length ? f.current[f.current.length - 1].gdd : 0));
   const maxY = Math.ceil(maxGDD / 500) * 500;
 
-  const xScale = d3.scalePoint()
-    .domain(fieldData[0]?.current.map(d => d.date) || ["2026-01-01"])
-    .range([0, width]);
+  const xDomain = d3.extent(fieldData[0]?.current || [], d => new Date(d.date));
+  const xScale = d3.scaleTime().domain(xDomain).range([0, width]);
   const yScale = d3.scaleLinear().domain([0, maxY]).range([height, 0]);
 
   svg.append("g").attr("class", "axis").call(d3.axisLeft(yScale).ticks(5));
   svg.append("g").attr("class", "axis").attr("transform", "translate(0," + height + ")")
-    .call(d3.axisBottom(xScale).tickFormat(function(d) {
-      return d3.timeFormat("%b")(new Date(d));
-    }).ticks(8));
+    .call(d3.axisBottom(xScale).ticks(d3.timeMonth).tickFormat(d3.timeFormat("%b")));
 
   svg.append("text").attr("class", "chart-title")
     .attr("x", -32).attr("y", 12).attr("transform", "rotate(-90)").text("GDD (&deg;F-days)");
