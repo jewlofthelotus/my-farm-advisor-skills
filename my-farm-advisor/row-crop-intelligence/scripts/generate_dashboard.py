@@ -1059,7 +1059,7 @@ function renderNDVITimeSeries() {
     .y(d => yScale(d.value))
     .curve(d3.curveLinear);
 
-  ff.forEach(f => {
+  ff.forEach(function(f, i) {
     const series = f.ndvi_series;
     if (series.length < 2) return;
     const last = series[series.length - 1];
@@ -1094,29 +1094,24 @@ function renderNDVITimeSeries() {
           .style("top", (event.pageY - 28) + "px");
       });
 
-    svg.append("text")
-      .attr("x", xScale(new Date(last.date)) + 4)
-      .attr("y", yScale(last.value))
-      .attr("font-size", "10px")
-      .attr("fill", colorScale(f.id))
-      .text(f.name)
-      .style("cursor", "pointer")
-      .on("mouseenter", function(event) {
-        tooltip.classed("visible", true)
-          .html(ndviTip)
-          .style("left", (event.pageX + 12) + "px")
-          .style("top", (event.pageY - 28) + "px");
-      })
-      .on("mouseleave", function() {
-        tooltip.classed("visible", false);
-      })
-      .on("click", function(event) {
-        event.stopPropagation();
-        tooltip.classed("visible", true)
-          .html(ndviTip)
-          .style("left", (event.pageX + 12) + "px")
-          .style("top", (event.pageY - 28) + "px");
+    // Color legend (replaces per-line end labels to avoid overlap)
+    if (i === 0) {
+      var legend = svg.append("g")
+        .attr("transform", "translate(4, 4)")
+        .attr("font-size", "10px");
+      ff.forEach(function(fi, j) {
+        var row = legend.append("g")
+          .attr("transform", "translate(0, " + (j * 16) + ")");
+        row.append("rect")
+          .attr("width", 10).attr("height", 10)
+          .attr("fill", colorScale(fi.id))
+          .attr("rx", 2);
+        row.append("text")
+          .attr("x", 16).attr("y", 9)
+          .attr("fill", "#333")
+          .text(fi.name);
       });
+    }
   });
 }
 
@@ -1592,15 +1587,24 @@ function renderActionList() {
     const tl = THRESHOLD_LABELS[f.current_risk];
     const ndviInfo = f.current_ndvi != null ? 'NDVI: ' + f.current_ndvi.toFixed(3) : '';
     const trendInfo = f.ndvi_trend_pct ? ' (' + (f.ndvi_trend_pct >= 0 ? '+' : '') + f.ndvi_trend_pct + ')' : '';
-    const soilInfo = f.soil?.awc_in_in != null ? 'AWC ' + f.soil.awc_in_in + ' in/in' : '';
-    const action = f.current_risk === 'critical'
-      ? 'Scout immediately -- consider irrigation or tissue sampling.'
-      : 'Monitor weekly -- check NDVI trend and soil moisture.';
+    const soilInfo = f.soil?.awc_in_in != null ? 'AWS ' + f.soil.awc_in_in + ' in' : '';
+    var action = '';
+    if (f.current_risk === 'critical') {
+      action = 'Scout immediately.';
+      if (f.ndvi_trend === 'declining') action += ' NDVI declining (' + (f.ndvi_trend_pct >= 0 ? '+' : '') + f.ndvi_trend_pct + ').';
+      if (f.soil?.awc_in_in != null) action += ' AWS ' + f.soil.awc_in_in.toFixed(2) + ' in.';
+      action += ' Consider irrigation or tissue sampling.';
+    } else {
+      action = 'Monitor weekly.';
+      if (f.ndvi_trend !== 'stable') action += ' NDVI ' + f.ndvi_trend + ' (' + (f.ndvi_trend_pct >= 0 ? '+' : '') + f.ndvi_trend_pct + ').';
+      if (f.weather_summary?.days_since_significant_rain > 7) action += ' ' + f.weather_summary.days_since_significant_rain + 'd no rain.';
+      action += ' Check soil moisture and NDVI trend.';
+    }
 
     html += '<div class="action-item">' +
       '<span class="risk-badge" style="background:' + tl.color + '">' + tl.label + '</span>' +
       '<span class="risk-text">' +
-        '<strong>' + f.name + ' (' + f.id + ')</strong>: ' + ndviInfo + trendInfo + ' &middot; ' + soilInfo + '<br>' +
+        '<strong>' + f.name + '</strong>: ' + ndviInfo + trendInfo + ' &middot; ' + soilInfo + '<br>' +
         '<span style="color:#777; font-size:0.8rem;">' + action + '</span>' +
       '</span>' +
     '</div>';
