@@ -224,19 +224,144 @@ def compute_weather_summaries(weather_records):
         "days_since_significant_rain": days_since_rain
     }
 
-def classify_risk(ndvi_series, config):
+def compute_growth_phase(weather_records, config):
+    """Determine current growth phase from accumulated GDD (post-planting, base 50°F).
+
+    Returns a dict:
+      phase         – one of "establishing" | "building" | "reproductive_early" | "reproductive_late"
+      cum_gdd_f     – cumulative GDD in °F-days from planting to the latest weather record
+      stage_label   – adjacent-stage bracket, e.g. "V6–VT"
+      stage_description – human-readable phase description, e.g. "Vegetative"
+    """
+    stages = config.get("growth_stages", {})
+    # Ordered stage list with GDD thresholds
+    ordered = [("VE", 120), ("V6", 500), ("VT", 1130), ("R1", 1400),
+               ("R2", 1650), ("R3", 1880), ("R4", 2150), ("R5", 2450), ("R6", 2700)]
+    # Reproductive sub-window boundaries
+    R1_GDD = stages.get("R1", 1400)
+    R4_GDD = stages.get("R4", 2150)
+
+    if not weather_records:
+        return {
+            "phase": "building",
+            "cum_gdd_f": 0.0,
+            "stage_label": "Unknown",
+            "stage_description": "Unknown",
+        }
+
+    df = pd.DataFrame(weather_records)
+    df["date"] = pd.to_datetime(df["date"])
+    df["T2M_MIN"] = pd.to_numeric(df["T2M_MIN"], errors="coerce")
+    df["T2M_MAX"] = pd.to_numeric(df["T2M_MAX"], errors="coerce")
+    df = df.dropna(subset=["T2M_MIN", "T2M_MAX"]).sort_values("date").reset_index(drop=True)
+
+    today = date.today()
+    use_year = today.year
+    year_df = df[df["date"].dt.year == use_year]
+    if year_df.empty:
+        max_year = int(df["date"].dt.year.max())
+        year_df = df[df["date"].dt.year == max_year]
+        use_year = max_year
+
+    # Determine planting date: last spring frost (T2M_MIN <= 0°C) before July 1,
+    # defaulting to April 20 if no frost found.
+    default_planting = pd.Timestamp(f"{use_year}-04-20")
+    frost_rows = year_df[(year_df["T2M_MIN"] <= 0.0) &
+                         (year_df["date"].dt.dayofyear <= 182)]
+    if not frost_rows.empty:
+        last_frost = frost_rows["date"].max()
+        planting_date = last_frost if last_frost > default_planting else default_planting
+    else:
+        planting_date = default_planting
+
+    # Accumulate GDD in °F from planting date (base 50°F)
+    post_planting = year_df[year_df["date"] >= planting_date]
+    base_f = config.get("gdd_base_temp_f", 50.0)
+    cum_gdd_f = 0.0
+    for _, row in post_planting.iterrows():
+        avg_f = (row["T2M_MIN"] + row["T2M_MAX"]) / 2.0 * 9 / 5 + 32
+        cum_gdd_f += max(0.0, avg_f - base_f)
+
+    # Determine phase
+    VE_GDD = stages.get("VE", 120)
+    if cum_gdd_f < VE_GDD:
+        phase = "establishing"
+    elif cum_gdd_f < R1_GDD:
+        phase = "building"
+    elif cum_gdd_f < R4_GDD:
+        phase = "reproductive_early"
+    else:
+        phase = "reproductive_late"
+
+    # Stage label: find the two adjacent thresholds that bracket cum_gdd_f
+    stage_label = "Pre-VE"
+    stage_description = "Emergence"
+    for i, (sname, sthresh) in enumerate(ordered):
+        if cum_gdd_f < sthresh:
+            if i == 0:
+                stage_label = f"Planting–{sname}"
+                stage_description = "Emergence"
+            else:
+                prev_name = ordered[i - 1][0]
+                stage_label = f"{prev_name}–{sname}"
+                stage_description = _stage_desc(prev_name)
+            break
+    else:
+        # Past R6
+        stage_label = "R6+"
+        stage_description = "Maturing"
+
+    return {
+        "phase": phase,
+        "cum_gdd_f": round(cum_gdd_f, 1),
+        "stage_label": stage_label,
+        "stage_description": stage_description,
+    }
+
+
+def _stage_desc(stage_name):
+    """Human-readable description for the opening stage of a bracket."""
+    return {
+        "VE": "Early Vegetative",
+        "V6": "Vegetative",
+        "VT": "Tasseling",
+        "R1": "Silking",
+        "R2": "Blister",
+        "R3": "Milk",
+        "R4": "Dough",
+        "R5": "Dent",
+        "R6": "Maturing",
+    }.get(stage_name, stage_name)
+
+
+def classify_risk(ndvi_series, config, phase="building"):
+    """Classify field NDVI risk, gated by growth phase.
+
+    Phase behavior:
+      establishing      – suppress all flags (bare soil NDVI is not diagnostic)
+      building          – full flagging: absolute floors + decline-based promotions
+      reproductive_early – absolute floors only (0.50/0.70); decline flags suppressed
+      reproductive_late  – suppress all flags (universal senescence; non-diagnostic)
+    """
     if not ndvi_series:
         return "unknown"
+
+    # Phases where NDVI is not diagnostic at all
+    if phase in ("establishing", "reproductive_late"):
+        return "healthy"
+
     latest = ndvi_series[-1]["value"]
     threshold = config["stress_threshold"]
     watch_threshold = config["watch_threshold"]
 
+    # Absolute NDVI floor — active in building and reproductive_early
     if latest < threshold:
         return "critical"
     if latest < watch_threshold:
         return "watch"
 
-    if len(ndvi_series) >= 3:
+    # Decline-based promotions — only in building phase
+    if phase == "building" and len(ndvi_series) >= 3:
         recent = ndvi_series[-3:]
         first_val = recent[0]["value"]
         latest_val = recent[-1]["value"]
@@ -245,18 +370,39 @@ def classify_risk(ndvi_series, config):
             return "critical"
         if delta <= -0.05:
             return "watch"
+
     return "healthy"
 
-def compute_ndvi_trend(ndvi_series):
+
+def compute_ndvi_trend(ndvi_series, phase="building"):
+    """Compute NDVI trend direction, gated by growth phase.
+
+    Returns (trend_label, delta) where trend_label is one of:
+      "improving" | "stable" | "declining" | "expected_decline"
+
+    "expected_decline" means the crop is declining, but it is biologically
+    normal for the current phase — not a stress signal.
+    """
     if len(ndvi_series) < 3:
         return "stable", 0.0
+
     recent = ndvi_series[-3:]
     first, last = recent[0]["value"], recent[-1]["value"]
     delta = round(last - first, 3)
+
+    # In establishing phase, trend is meaningless
+    if phase == "establishing":
+        return "stable", 0.0
+
     if delta > 0.03:
         return "improving", delta
+
     if delta < -0.03:
+        # In reproductive phases, declining NDVI is expected — label it as such
+        if phase in ("reproductive_early", "reproductive_late"):
+            return "expected_decline", delta
         return "declining", delta
+
     return "stable", delta
 
 # ---------------------------------------------------------------------------
@@ -307,8 +453,13 @@ def extract_field_data(field_dir, farm_root, data_root, current_crop=None, weath
 
     crop_type = "corn"
     cc = CROP_CONFIG["corn"]
-    risk = classify_risk(year_ndvi_series, cc)
-    trend, trend_pct = compute_ndvi_trend(year_ndvi_series)
+
+    # Compute growth phase from weather records (base-50°F GDD from planting date)
+    growth_info = compute_growth_phase(weather, cc)
+    phase = growth_info["phase"]
+
+    risk = classify_risk(year_ndvi_series, cc, phase=phase)
+    trend, trend_pct = compute_ndvi_trend(year_ndvi_series, phase=phase)
 
     current_ndvi = round(year_ndvi_series[-1]["value"], 3) if year_ndvi_series else None
 
@@ -358,6 +509,11 @@ def extract_field_data(field_dir, farm_root, data_root, current_crop=None, weath
         "weather_series_id": grid_key or field_id,
         "cdl_crops": cdl_crops,
         "current_crop": current_crop,
+        # Growth-stage context (used by JS as initial seed; JS recomputes on filter changes)
+        "current_phase": phase,
+        "current_stage_label": growth_info["stage_label"],
+        "stage_description": growth_info["stage_description"],
+        "cum_gdd_f": growth_info["cum_gdd_f"],
     }
     return field_data
 
@@ -482,7 +638,6 @@ def build_html(data_json_str, d3_min_js, weather_series=None):
     data = json.loads(data_json_str)
 
     fields_json = json.dumps(data["fields"], default=str)
-    summary_json = json.dumps(data["summary"], default=str)
     config_json = json.dumps(config, default=str)
     threshold_labels_json = json.dumps(THRESHOLD_LABELS, default=str)
     crop_config_json = json.dumps(CROP_CONFIG, default=str)
@@ -498,7 +653,6 @@ def build_html(data_json_str, d3_min_js, weather_series=None):
     template = template.replace("__TOTAL_FIELDS__", str(total_fields))
     template = template.replace("__GENERATED_AT__", generated_at)
     template = template.replace("__FIELDS_JSON__", fields_json)
-    template = template.replace("__SUMMARY_JSON__", summary_json)
     template = template.replace("__CONFIG_JSON__", config_json)
     template = template.replace("__THRESHOLD_LABELS_JSON__", threshold_labels_json)
     template = template.replace("__CROP_CONFIG_JSON__", crop_config_json)
@@ -676,7 +830,7 @@ svg.icon-lg { width: 24px; height: 24px; }
 
   <div class="chart-grid" id="ndvi-time-series-section">
     <div class="chart-card chart-full">
-      <h3 id="ndvi-declining-title">NDVI Declining in <span id="ndvi-declining-count">0</span> Fields<span class="map-legend" id="ndvi-legend"></span></h3>
+      <h3 id="ndvi-declining-title">NDVI<span class="map-legend" id="ndvi-legend"></span></h3>
       <div class="chart-container" id="ndvi-time-series"></div>
     </div>
   </div>
@@ -723,7 +877,6 @@ const CROP_CONFIG = __CROP_CONFIG_JSON__;
 const CONFIG = CROP_CONFIG.corn;
 const THRESHOLD_LABELS = __THRESHOLD_LABELS_JSON__;
 const ALL_FIELDS = __FIELDS_JSON__;
-const SUMMARY = __SUMMARY_JSON__;
 const WEATHER_SERIES = __WEATHER_SERIES_JSON__;
 
 // ===== ICONS =====
@@ -741,12 +894,130 @@ const ICONS = {
 };
 
 // ===== DATE-AWARE FIELD HELPERS =====
-function classifyRisk(ndviSeries, config) {
+
+/**
+ * computeCurrentGDDFromWeather
+ * Extracts planting date (last spring frost or Apr 20 fallback), accumulates
+ * GDD in °F-days (base 50°F) from planting to the last weather record, then
+ * returns the growth phase and a human-readable stage label.
+ *
+ * Phase enum:
+ *   "establishing"       – 0 → VE (120 GDD): bare soil / emergence, NDVI not diagnostic
+ *   "building"           – VE → R1 (120–1400 GDD): canopy building, full flagging active
+ *   "reproductive_early" – R1 → R4 (1400–2150 GDD): absolute NDVI floors only, decline suppressed
+ *   "reproductive_late"  – R4+ (2150+ GDD): universal senescence, all flagging suppressed
+ */
+function computeCurrentGDDFromWeather(weatherData, displayYear, config) {
+  var stages    = config.growth_stages || {};
+  var gddBaseF  = config.gdd_base_temp_f || 50.0;
+  var VE_GDD    = stages.VE  || 120;
+  var R1_GDD    = stages.R1  || 1400;
+  var R4_GDD    = stages.R4  || 2150;
+
+  // Ordered stage list for bracket labelling
+  var orderedStages = [
+    ['VE', stages.VE || 120],  ['V6', stages.V6 || 500],
+    ['VT', stages.VT || 1130], ['R1', stages.R1 || 1400],
+    ['R2', stages.R2 || 1650], ['R3', stages.R3 || 1880],
+    ['R4', stages.R4 || 2150], ['R5', stages.R5 || 2450],
+    ['R6', stages.R6 || 2700],
+  ];
+  var stageDescMap = {
+    VE: 'Early Vegetative', V6: 'Vegetative', VT: 'Tasseling',
+    R1: 'Silking', R2: 'Blister', R3: 'Milk',
+    R4: 'Dough',  R5: 'Dent',    R6: 'Maturing',
+  };
+
+  // Guard: empty weather
+  if (!weatherData || !weatherData.dates || !weatherData.dates.length) {
+    return { phase: 'building', cumGDD: 0, stageLabel: 'Unknown', stageDescription: 'Unknown', plantingDate: null };
+  }
+
+  // --- Determine planting date (last spring frost before July 1, else Apr 20) ---
+  var frostThresholdC = 0.0;
+  var defaultPlanting = new Date(displayYear + '-04-20');
+  var lastFrostDate = null;
+  for (var i = 0; i < weatherData.dates.length; i++) {
+    var tminVal = +weatherData.T2M_MIN[i];
+    if (!isNaN(tminVal) && tminVal <= frostThresholdC) {
+      var dObj = new Date(weatherData.dates[i]);
+      var doy  = Math.floor((dObj - new Date(dObj.getFullYear(), 0, 0)) / 86400000);
+      if (doy <= 182) {
+        if (!lastFrostDate || dObj > lastFrostDate) lastFrostDate = dObj;
+      }
+    }
+  }
+  var plantingDate = (lastFrostDate && lastFrostDate > defaultPlanting) ? lastFrostDate : defaultPlanting;
+
+  // --- Accumulate GDD in °F from planting date ---
+  var cumGDD = 0;
+  for (var j = 0; j < weatherData.dates.length; j++) {
+    var dj = new Date(weatherData.dates[j]);
+    if (dj < plantingDate) continue;
+    var tmx = +weatherData.T2M_MAX[j], tmn = +weatherData.T2M_MIN[j];
+    if (!isNaN(tmx) && !isNaN(tmn)) {
+      var avgF = (tmn + tmx) / 2 * 9 / 5 + 32;
+      cumGDD += Math.max(0, avgF - gddBaseF);
+    }
+  }
+  cumGDD = Math.round(cumGDD * 10) / 10;
+
+  // --- Determine phase ---
+  var phase;
+  if (cumGDD < VE_GDD)       phase = 'establishing';
+  else if (cumGDD < R1_GDD)  phase = 'building';
+  else if (cumGDD < R4_GDD)  phase = 'reproductive_early';
+  else                        phase = 'reproductive_late';
+
+  // --- Stage label: adjacent bracket ---
+  var stageLabel = 'Planting\u2013VE';
+  var stageDescription = 'Emergence';
+  for (var k = 0; k < orderedStages.length; k++) {
+    if (cumGDD < orderedStages[k][1]) {
+      if (k === 0) {
+        stageLabel = 'Planting\u2013' + orderedStages[0][0];
+        stageDescription = 'Emergence';
+      } else {
+        var prevName = orderedStages[k - 1][0];
+        var curName  = orderedStages[k][0];
+        stageLabel = prevName + '\u2013' + curName;
+        stageDescription = stageDescMap[prevName] || prevName;
+      }
+      break;
+    }
+    if (k === orderedStages.length - 1) {
+      stageLabel = 'R6+';
+      stageDescription = 'Maturing';
+    }
+  }
+
+  return { phase: phase, cumGDD: cumGDD, stageLabel: stageLabel, stageDescription: stageDescription, plantingDate: plantingDate };
+}
+
+/**
+ * classifyRisk — growth-stage-aware NDVI risk tier.
+ *
+ * phase behavior:
+ *   establishing      → always 'healthy' (bare soil, not diagnostic)
+ *   building          → full flagging: absolute floors + decline-based promotions
+ *   reproductive_early → absolute floors only (0.50 / 0.70); decline flags suppressed
+ *   reproductive_late  → always 'healthy' (universal senescence, not diagnostic)
+ */
+function classifyRisk(ndviSeries, config, phase) {
   if (!ndviSeries || !ndviSeries.length) return 'unknown';
+  phase = phase || 'building';
+
+  // Phases where NDVI number is not diagnostic
+  if (phase === 'establishing' || phase === 'reproductive_late') return 'healthy';
+
   var latest = ndviSeries[ndviSeries.length - 1].value;
+
+  // Absolute NDVI floor — active in building and reproductive_early
   if (latest < config.stress_threshold) return 'critical';
-  if (latest < config.watch_threshold) return 'watch';
-  if (ndviSeries.length >= 3) {
+  if (latest < config.watch_threshold)  return 'watch';
+
+  // Decline-based promotions — building phase only
+  if (phase === 'building' && ndviSeries.length >= 3) {
     var recent = ndviSeries.slice(-3);
     var firstVal = recent[0].value, latestVal = recent[recent.length - 1].value;
     var delta = latestVal - firstVal;
@@ -756,13 +1027,35 @@ function classifyRisk(ndviSeries, config) {
   return 'healthy';
 }
 
-function computeNDVITrend(ndviSeries) {
+/**
+ * computeNDVITrend — growth-stage-aware trend direction.
+ *
+ * Returns { trend, pct } where trend is one of:
+ *   'improving' | 'stable' | 'declining' | 'expected_decline'
+ *
+ * 'expected_decline' = crop is declining but it is biologically normal for
+ * the current phase (reproductive). Consumers that check === 'declining'
+ * will NOT count expected_decline as a stress signal.
+ */
+function computeNDVITrend(ndviSeries, phase) {
+  phase = phase || 'building';
   if (ndviSeries.length < 3) return { trend: 'stable', pct: 0 };
   var recent = ndviSeries.slice(-3);
   var first = recent[0].value, last = recent[recent.length - 1].value;
   var delta = +(last - first).toFixed(3);
+
+  // Establishing: too noisy, report stable
+  if (phase === 'establishing') return { trend: 'stable', pct: 0 };
+
   if (delta > 0.03) return { trend: 'improving', pct: delta };
-  if (delta < -0.03) return { trend: 'declining', pct: delta };
+
+  if (delta < -0.03) {
+    // Reproductive phases: decline is expected — use distinct label
+    if (phase === 'reproductive_early' || phase === 'reproductive_late') {
+      return { trend: 'expected_decline', pct: delta };
+    }
+    return { trend: 'declining', pct: delta };
+  }
   return { trend: 'stable', pct: delta };
 }
 
@@ -855,11 +1148,20 @@ const state = {
       ff = ff.filter(function(f) { return this.filters.fieldIds.includes(f.id); }.bind(this));
     }
     var self = this;
+
+    // Compute growth phase once using the first field's weather (grower-average convention,
+    // same as the NDVI chart annotation path). All fields share the same growing region.
+    var phaseInfo = { phase: 'building', cumGDD: 0, stageLabel: 'Unknown', stageDescription: 'Unknown', plantingDate: null };
+    if (ff.length > 0) {
+      var firstWeather = self.getFilteredWeather(ff[0]);
+      phaseInfo = computeCurrentGDDFromWeather(firstWeather, year, CONFIG);
+    }
+
     return ff.map(function(f) {
       var ndviSeries = self.getFilteredNDVISeries(f);
       var weatherData = self.getFilteredWeather(f);
-      var risk = classifyRisk(ndviSeries, CONFIG);
-      var trend = computeNDVITrend(ndviSeries);
+      var risk = classifyRisk(ndviSeries, CONFIG, phaseInfo.phase);
+      var trend = computeNDVITrend(ndviSeries, phaseInfo.phase);
       var lastNDVI = ndviSeries.length ? ndviSeries[ndviSeries.length - 1].value : null;
       var weatherSumm = computeWeatherSummaries(weatherData, CONFIG);
       return Object.assign({}, f, {
@@ -869,6 +1171,11 @@ const state = {
         ndvi_trend_pct: trend.pct,
         weather_summary: Object.assign({}, f.weather_summary, weatherSumm),
         ndvi_series: ndviSeries,
+        // Growth-stage context for KPI display and action list
+        current_phase: phaseInfo.phase,
+        current_stage_label: phaseInfo.stageLabel,
+        stage_description: phaseInfo.stageDescription,
+        cum_gdd_f: phaseInfo.cumGDD,
       });
     });
   },
@@ -946,30 +1253,40 @@ function renderKPIs() {
   const avgNDVI = ndviVals.length ? (ndviVals.reduce((a,b) => a+b, 0) / ndviVals.length).toFixed(3) : '--';
 
   const improving = ff.filter(f => f.ndvi_trend === 'improving').length;
+  // Use stage-aware 'declining' count (ndvi_trend === 'declining') — consistent with
+  // the chart title and free of the raw-negative-delta false positives that the old
+  // anyDeclining variable introduced. 'expected_decline' fields are NOT counted here.
   const declining = ff.filter(f => f.ndvi_trend === 'declining').length;
-  var anyDeclining = ff.filter(function(f) {
-    var s = f.ndvi_series;
-    if (!s || s.length < 2) return false;
-    var recent = s.slice(-3);
-    return (recent[recent.length - 1].value - recent[0].value) < 0;
-  }).length;
 
+  // Growth-stage context (from first field; all fields share phase in getFilteredFields)
+  var currentPhase = ff.length ? (ff[0].current_phase || 'building') : 'building';
+  var stageLabel   = ff.length ? (ff[0].current_stage_label || '') : '';
+  var stageDesc    = ff.length ? (ff[0].stage_description || '') : '';
+
+  // NDVI tier: also gate by phase — in establishing/reproductive_late the avg NDVI
+  // number is not diagnostic, so don't colour-code the KPI card by it.
   var ndviTier = 'healthy';
-  if (avgNDVI < CONFIG.stress_threshold) ndviTier = 'critical';
-  else if (avgNDVI < CONFIG.watch_threshold) ndviTier = 'watch';
+  if (currentPhase !== 'establishing' && currentPhase !== 'reproductive_late') {
+    if (avgNDVI < CONFIG.stress_threshold) ndviTier = 'critical';
+    else if (avgNDVI < CONFIG.watch_threshold) ndviTier = 'watch';
+  }
   var ndviLabel = THRESHOLD_LABELS[ndviTier]?.label || 'Unknown';
   var ndviIconHtml = ndviTier === 'critical' ? ICONS.warning : ndviTier === 'watch' ? ICONS.alert : ICONS.check;
   var ndviTrendText = ndviLabel;
-  if (anyDeclining > 0 || improving > 0) ndviTrendText += ' &middot; ' + anyDeclining + ' declining, ' + improving + ' improving';
+  if (declining > 0 || improving > 0) ndviTrendText += ' &middot; ' + declining + ' declining, ' + improving + ' improving';
 
   const gddVals = ff.map(f => f.weather_summary?.gdd_accumulated || 0);
   const avgGDD = gddVals.length ? Math.round(gddVals.reduce((a,b) => a+b, 0) / gddVals.length) : 0;
 
+  // GDD card — for current year, show growth stage label instead of target reminder
+  var gddTrendLine = isCurrent && stageLabel
+    ? 'Growth Stage: ' + stageLabel + ' &middot; ' + stageDesc
+    : 'Target: ' + CONFIG.gdd_target + ' &deg;F-days';
   var gddCardHtml =
     '<div class="kpi-card healthy">' +
       '<div class="kpi-label">' + ICONS.temp + ' GDD Accumulated (avg)</div>' +
       '<div class="kpi-value">' + avgGDD + ' <span class="kpi-unit">&deg;F-days</span></div>' +
-      '<div class="kpi-trend">Target: ' + CONFIG.gdd_target + ' &deg;F-days</div>' +
+      '<div class="kpi-trend">' + gddTrendLine + '</div>' +
     '</div>';
 
   if (isCurrent) {
@@ -1038,8 +1355,26 @@ function renderNDVITimeSeries() {
   const container = d3.select("#ndvi-time-series");
   container.html("");
   const ff = state.getFilteredFields();
-  var decliningCount = ff.filter(function(f) { return f.ndvi_trend === 'declining'; }).length;
-  d3.select("#ndvi-declining-count").text(decliningCount);
+
+  // Stage-aware chart title
+  var currentPhase = ff.length ? (ff[0].current_phase || 'building') : 'building';
+  var stageLabel   = ff.length ? (ff[0].current_stage_label || '') : '';
+  var ndviLegendSpan = '<span class="map-legend" id="ndvi-legend"></span>';
+  var chartTitle;
+  if (currentPhase === 'establishing') {
+    chartTitle = 'NDVI &middot; Emergence Phase (pre-canopy, flagging suppressed)' + ndviLegendSpan;
+  } else if (currentPhase === 'building') {
+    var decliningCount = ff.filter(function(f) { return f.ndvi_trend === 'declining'; }).length;
+    chartTitle = 'NDVI Declining in ' + decliningCount + ' Fields' + ndviLegendSpan;
+  } else if (currentPhase === 'reproductive_early') {
+    var belowFloor = ff.filter(function(f) { return f.current_risk === 'critical' || f.current_risk === 'watch'; }).length;
+    chartTitle = 'NDVI &middot; Early Grain Fill (' + (stageLabel || 'R1\u2013R4') + ') &middot; ' + belowFloor + ' field' + (belowFloor !== 1 ? 's' : '') + ' below threshold' + ndviLegendSpan;
+  } else {
+    // reproductive_late
+    chartTitle = 'NDVI &middot; Natural Senescence (' + (stageLabel || 'R4+') + ', flagging suppressed)' + ndviLegendSpan;
+  }
+  d3.select("#ndvi-declining-title").html(chartTitle);
+
   if (!ff.length) return;
 
   const rect = container.node().getBoundingClientRect();
@@ -1479,15 +1814,29 @@ function renderMap() {
     labelData.push({ f: f, cx: centroid[0], cy: centroid[1] });
   });
 
-  // Simple collision avoidance — offset overlapping labels vertically
-  for (var i = 0; i < labelData.length; i++) {
-    var oy = 0;
-    for (var j = 0; j < i; j++) {
-      var dx = labelData[i].cx - labelData[j].cx;
-      var dy = (labelData[i].cy + (labelData[i].oy || 0)) - (labelData[j].cy + (labelData[j].oy || 0));
-      if (Math.sqrt(dx*dx + dy*dy) < 36) oy += 16;
+  // Collision avoidance — AABB test on estimated label extents, settled-state.
+  // Label text is "Field N (0.NN)" — ~6px per character at 10px bold is conservative.
+  var CHAR_W = 6, LINE_H = 16;
+  function labelWidth(ld) {
+    var txt = ld.f.name + ' (' + (ld.f.current_ndvi != null ? ld.f.current_ndvi.toFixed(2) : '--') + ')';
+    return txt.length * CHAR_W;
+  }
+  for (var i = 0; i < labelData.length; i++) labelData[i].oy = 0;
+  // Iterate until no new offsets are applied (or safety cap of 20 passes)
+  var changed = true, pass = 0;
+  while (changed && pass++ < 20) {
+    changed = false;
+    for (var i = 0; i < labelData.length; i++) {
+      for (var j = 0; j < i; j++) {
+        var dx  = Math.abs(labelData[i].cx - labelData[j].cx);
+        var dy  = Math.abs((labelData[i].cy + labelData[i].oy) - (labelData[j].cy + labelData[j].oy));
+        var hw  = (labelWidth(labelData[i]) + labelWidth(labelData[j])) / 2;
+        if (dx < hw && dy < LINE_H) {
+          labelData[i].oy += LINE_H;
+          changed = true;
+        }
+      }
     }
-    labelData[i].oy = oy;
   }
 
   // Render labels with collision offsets
@@ -1626,6 +1975,94 @@ function renderGDD() {
         showTooltip(gddTip, event.pageX, event.pageY);
       });
   });
+
+  // Growth stage annotations — identical to NDVI chart: dashed verticals at the
+  // calendar date each stage threshold (base-50°F GDD from planting) was crossed.
+  var stageColors = {"VE":"#4CAF50","V6":"#8BC34A","VT":"#FFC107","R1":"#FF9800",
+                     "R2":"#FF5722","R3":"#795548","R4":"#9C27B0","R5":"#3F51B5","R6":"#607D8B"};
+  var gddBaseF    = CONFIG.gdd_base_temp_f;
+  var displayYear = state.filters.selectedYear;
+  var chartStart  = xScale.domain()[0], chartEnd = xScale.domain()[1];
+  var dailyData   = state.getFilteredWeather(ff[0]);
+  if (dailyData.dates.length > 0) {
+    // Planting date: last spring frost (T2M_MIN <= 0°C, DOY <= 182), fallback Apr 20
+    var frostThresholdC = 0.0;
+    var defaultPlanting = new Date(displayYear + '-04-20');
+    var lastFrostDate   = null;
+    for (var i = 0; i < dailyData.dates.length; i++) {
+      var tminV = +dailyData.T2M_MIN[i];
+      if (!isNaN(tminV) && tminV <= frostThresholdC) {
+        var dObj = new Date(dailyData.dates[i]);
+        var doy  = Math.floor((dObj - new Date(dObj.getFullYear(), 0, 0)) / 86400000);
+        if (doy <= 182 && (!lastFrostDate || dObj > lastFrostDate)) lastFrostDate = dObj;
+      }
+    }
+    var plantingDate = (lastFrostDate && lastFrostDate > defaultPlanting) ? lastFrostDate : defaultPlanting;
+
+    // Accumulate GDD in °F-days (base 50°F) from planting — matches growth_stages thresholds
+    var cumGDD    = 0;
+    var cumGDDArr = [];
+    for (var i = 0; i < dailyData.dates.length; i++) {
+      var dObj = new Date(dailyData.dates[i]);
+      if (dObj < plantingDate) {
+        cumGDDArr.push(0);
+      } else {
+        var avgF = (+dailyData.T2M_MIN[i] + +dailyData.T2M_MAX[i]) / 2 * 9 / 5 + 32;
+        cumGDD += Math.max(0, avgF - gddBaseF);
+        cumGDDArr.push(cumGDD);
+      }
+    }
+
+    // Planting annotation
+    if (plantingDate >= chartStart && plantingDate <= chartEnd) {
+      var px  = xScale(plantingDate);
+      svg.append("line")
+        .attr("x1", px).attr("x2", px).attr("y1", 0).attr("y2", height)
+        .attr("stroke", "#333").attr("stroke-width", 0.8)
+        .attr("stroke-dasharray", "3,3").attr("opacity", 0.45);
+      var plg = svg.append("g").attr("transform", "translate(" + px + ",0)");
+      var plt = plg.append("text")
+        .attr("x", 0).attr("y", 10).attr("text-anchor", "middle")
+        .attr("font-size", "8px").attr("font-weight", "600").attr("fill", "#333")
+        .text("Planting");
+      var plb = plt.node().getBBox();
+      plg.insert("rect", "text")
+        .attr("x", plb.x - 2).attr("y", plb.y - 1)
+        .attr("width", plb.width + 4).attr("height", plb.height + 2)
+        .attr("fill", "#fff").attr("opacity", 0.8).attr("rx", 2);
+    }
+
+    // Stage annotations
+    var stages    = CONFIG.growth_stages || {};
+    var stageKeys = Object.keys(stages);
+    stageKeys.forEach(function(stage) {
+      var threshold = stages[stage];
+      for (var i = 0; i < cumGDDArr.length; i++) {
+        if (cumGDDArr[i] >= threshold) {
+          var evDate = new Date(dailyData.dates[i]);
+          if (evDate >= chartStart && evDate <= chartEnd) {
+            var xPos = xScale(evDate);
+            var c    = stageColors[stage] || "#666";
+            svg.append("line")
+              .attr("x1", xPos).attr("x2", xPos).attr("y1", 0).attr("y2", height)
+              .attr("stroke", c).attr("stroke-width", 0.8)
+              .attr("stroke-dasharray", "3,3").attr("opacity", 0.45);
+            var labelG = svg.append("g").attr("transform", "translate(" + xPos + ",0)");
+            var txt = labelG.append("text")
+              .attr("x", 0).attr("y", 10).attr("text-anchor", "middle")
+              .attr("font-size", "8px").attr("font-weight", "600").attr("fill", c)
+              .text(stage);
+            var bbox = txt.node().getBBox();
+            labelG.insert("rect", "text")
+              .attr("x", bbox.x - 2).attr("y", bbox.y - 1)
+              .attr("width", bbox.width + 4).attr("height", bbox.height + 2)
+              .attr("fill", "#fff").attr("opacity", 0.8).attr("rx", 2);
+          }
+          break;
+        }
+      }
+    });
+  }
 }
 
 // ===== SOIL CHART =====
@@ -1825,15 +2262,21 @@ function renderFooter() {
 // ===== HEADER LEGEND =====
 function renderHeaderLegend() {
   var tiers = [
-    { key: "healthy", desc: "NDVI >= " + CONFIG.watch_threshold },
-    { key: "watch", desc: "NDVI " + CONFIG.stress_threshold + "-" + CONFIG.watch_threshold + " or declining >" + CONFIG.ndvi_decline_warning_pct + "%" },
-    { key: "critical", desc: "NDVI < " + CONFIG.stress_threshold + " or declining >" + CONFIG.ndvi_decline_critical_pct + "%" }
+    { key: "healthy", desc: "NDVI &ge; " + CONFIG.watch_threshold },
+    { key: "watch",   desc: "NDVI " + CONFIG.stress_threshold + "&ndash;" + CONFIG.watch_threshold + " (all phases) or declining &gt;" + CONFIG.ndvi_decline_warning_pct + "% (vegetative only)" },
+    { key: "critical",desc: "NDVI &lt; " + CONFIG.stress_threshold + " (all phases) or declining &gt;" + CONFIG.ndvi_decline_critical_pct + "% (vegetative only)" }
   ];
   var html = "";
   tiers.forEach(function(t) {
     var tl = THRESHOLD_LABELS[t.key];
     html += '<div class="legend-item"><span class="legend-swatch" style="background:' + tl.color + '"></span>' + tl.label + ' (' + t.desc + ')</div>';
   });
+  // Growth-phase gating note
+  html += '<div class="legend-item" style="margin-top:6px; font-size:0.78rem; color:#666;">' +
+    '<em>Flagging suppressed during establishment (pre-VE) and late reproductive (R4+) phases &mdash; ' +
+    'NDVI is non-diagnostic in those windows. Decline flags also suppressed R1&ndash;R4 (natural ' +
+    'senescence onset); absolute floors remain active through R4.</em>' +
+    '</div>';
   d3.select("#legend-risk-tiers").html(html);
 }
 
