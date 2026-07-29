@@ -568,7 +568,7 @@ svg.icon-lg { width: 24px; height: 24px; }
 
   <div class="chart-grid" id="ndvi-time-series-section">
     <div class="chart-card chart-full">
-      <h3 id="ndvi-declining-title">NDVI Declining in 0 Fields</h3>
+      <h3 id="ndvi-declining-title">NDVI Declining in 0 Fields<span class="map-legend" id="ndvi-legend"></span></h3>
       <div class="chart-container" id="ndvi-time-series"></div>
     </div>
   </div>
@@ -1105,22 +1105,15 @@ function renderNDVITimeSeries() {
           .style("top", (event.pageY - 28) + "px");
       });
 
-    // Per-field color legend above plot area
+    // HTML legend (like map legend)
     if (i === 0) {
-      var legend = svg.append("g")
-        .attr("transform", "translate(4, -12)")
-        .attr("font-size", "10px");
-      ff.forEach(function(fi, j) {
-        var row = legend.append("g")
-          .attr("transform", "translate(0, " + (j * 16) + ")");
-        row.append("rect")
-          .attr("width", 10).attr("height", 10)
-          .attr("fill", colorScale(fi.id))
-          .attr("rx", 2);
-        row.append("text")
-          .attr("x", 16).attr("y", 9)
-          .attr("fill", "#333")
-          .text(fi.name);
+      var legendEl = document.getElementById("ndvi-legend");
+      legendEl.innerHTML = "";
+      ff.forEach(function(fi) {
+        var item = document.createElement("span");
+        item.className = "legend-item";
+        item.innerHTML = '<span class="legend-swatch" style="background:' + colorScale(fi.id) + '"></span>' + fi.name;
+        legendEl.appendChild(item);
       });
     }
   });
