@@ -34,8 +34,8 @@ CROP_CONFIG = {
         "precip_significant_in": 0.1,
         "precip_significant_mm": 2.54,
         "growth_stages": {
-            "VE": 0, "V6": 400, "VT": 1100, "R1": 1300, "R2": 1600,
-            "R3": 1850, "R4": 2100, "R5": 2300, "R6": 2500
+            "VE": 120, "V6": 500, "VT": 1130, "R1": 1400, "R2": 1650,
+            "R3": 1880, "R4": 2150, "R5": 2450, "R6": 2700
         },
         "crop_name": "Corn",
         "kpi_units": {"ndvi": "", "gdd": "\u00b0F-days", "precip": "in", "awc": "in/in", "om": "%"}
@@ -160,6 +160,9 @@ def compute_weather_summaries(weather_records):
         return {}
     df = pd.DataFrame(weather_records)
     df["date"] = pd.to_datetime(df["date"])
+    df["T2M_MIN"] = pd.to_numeric(df["T2M_MIN"], errors="coerce")
+    df["T2M_MAX"] = pd.to_numeric(df["T2M_MAX"], errors="coerce")
+    df = df.dropna(subset=["T2M_MIN", "T2M_MAX"])
     df["gdd_c"] = df.apply(lambda r: compute_gdd(r["T2M_MIN"], r["T2M_MAX"]), axis=1)
     today = date.today()
     current_year = today.year
@@ -199,8 +202,6 @@ def classify_risk(ndvi_series, config):
     latest = ndvi_series[-1]["value"]
     threshold = config["stress_threshold"]
     watch_threshold = config["watch_threshold"]
-    decline_warn = config["ndvi_decline_warning_pct"]
-    decline_crit = config["ndvi_decline_critical_pct"]
 
     if latest < threshold:
         return "critical"
@@ -210,12 +211,12 @@ def classify_risk(ndvi_series, config):
     if len(ndvi_series) >= 3:
         recent = ndvi_series[-3:]
         first_val = recent[0]["value"]
-        if first_val > 0:
-            change_pct = ((latest - first_val) / first_val) * 100
-            if change_pct <= -decline_crit:
-                return "critical"
-            if change_pct <= -decline_warn:
-                return "watch"
+        latest_val = recent[-1]["value"]
+        delta = latest_val - first_val
+        if delta <= -0.10:
+            return "critical"
+        if delta <= -0.05:
+            return "watch"
     return "healthy"
 
 def compute_ndvi_trend(ndvi_series):
@@ -223,14 +224,12 @@ def compute_ndvi_trend(ndvi_series):
         return "stable", 0.0
     recent = ndvi_series[-3:]
     first, last = recent[0]["value"], recent[-1]["value"]
-    if first == 0:
-        return "stable", 0.0
-    change = ((last - first) / first) * 100
-    if change > 3:
-        return "improving", round(change, 1)
-    if change < -3:
-        return "declining", round(change, 1)
-    return "stable", round(change, 1)
+    delta = round(last - first, 3)
+    if delta > 0.03:
+        return "improving", delta
+    if delta < -0.03:
+        return "declining", delta
+    return "stable", delta
 
 # ---------------------------------------------------------------------------
 # Main data assembly
@@ -708,12 +707,10 @@ function classifyRisk(ndviSeries, config) {
   if (latest < config.watch_threshold) return 'watch';
   if (ndviSeries.length >= 3) {
     var recent = ndviSeries.slice(-3);
-    var firstVal = recent[0].value;
-    if (firstVal > 0) {
-      var changePct = ((latest - firstVal) / firstVal) * 100;
-      if (changePct <= -config.ndvi_decline_critical_pct) return 'critical';
-      if (changePct <= -config.ndvi_decline_warning_pct) return 'watch';
-    }
+    var firstVal = recent[0].value, latestVal = recent[recent.length - 1].value;
+    var delta = latestVal - firstVal;
+    if (delta <= -0.10) return 'critical';
+    if (delta <= -0.05) return 'watch';
   }
   return 'healthy';
 }
@@ -722,11 +719,10 @@ function computeNDVITrend(ndviSeries) {
   if (ndviSeries.length < 3) return { trend: 'stable', pct: 0 };
   var recent = ndviSeries.slice(-3);
   var first = recent[0].value, last = recent[recent.length - 1].value;
-  if (first === 0) return { trend: 'stable', pct: 0 };
-  var change = ((last - first) / first) * 100;
-  if (change > 3) return { trend: 'improving', pct: Math.round(change * 10) / 10 };
-  if (change < -3) return { trend: 'declining', pct: Math.round(change * 10) / 10 };
-  return { trend: 'stable', pct: Math.round(change * 10) / 10 };
+  var delta = +(last - first).toFixed(3);
+  if (delta > 0.03) return { trend: 'improving', pct: delta };
+  if (delta < -0.03) return { trend: 'declining', pct: delta };
+  return { trend: 'stable', pct: delta };
 }
 
 function computeWeatherSummaries(weatherRecords, config) {
@@ -735,16 +731,22 @@ function computeWeatherSummaries(weatherRecords, config) {
   var gddTotal = 0;
   var precipTotal = 0;
   weatherRecords.forEach(function(d) {
-    gddTotal += Math.max(0, (d.T2M_MAX + d.T2M_MIN) / 2 - 10);
-    precipTotal += d.PRECTOTCORR || 0;
+    var tmax = +d.T2M_MAX, tmin = +d.T2M_MIN;
+    if (tmax != null && tmin != null && !isNaN(tmax) && !isNaN(tmin)) {
+      gddTotal += Math.max(0, (tmax + tmin) / 2 - 10);
+    }
+    var p = +d.PRECTOTCORR;
+    if (!isNaN(p)) precipTotal += p;
   });
   var sorted = weatherRecords.slice().sort(function(a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
-  var lastDate = sorted.length ? sorted[sorted.length - 1].date : null;
-  var recentRain = sorted.filter(function(d) { return d.PRECTOTCORR >= significantMm; });
+  var recentRain = sorted.filter(function(d) {
+    var p = +d.PRECTOTCORR;
+    return !isNaN(p) && p >= significantMm;
+  });
   var daysSince = null;
-  if (recentRain.length && lastDate) {
+  if (recentRain.length) {
     var lastRain = recentRain[recentRain.length - 1].date;
-    daysSince = Math.round((new Date(lastDate) - new Date(lastRain)) / 86400000);
+    daysSince = Math.round((new Date() - new Date(lastRain)) / 86400000);
   }
   return { gdd_accumulated: Math.round(gddTotal), days_since_significant_rain: daysSince, total_precip_mm: Math.round(precipTotal) };
 }
@@ -878,8 +880,14 @@ function renderKPIs() {
 
   const improving = ff.filter(f => f.ndvi_trend === 'improving').length;
   const declining = ff.filter(f => f.ndvi_trend === 'declining').length;
-  const trendIcon = declining > improving ? ICONS.warning : ICONS.check;
-  const trendText = declining > improving ? 'Declining in ' + declining + ' fields' : 'Stable/Improving';
+
+  var ndviTier = 'healthy';
+  if (avgNDVI < CONFIG.stress_threshold) ndviTier = 'critical';
+  else if (avgNDVI < CONFIG.watch_threshold) ndviTier = 'watch';
+  var ndviLabel = THRESHOLD_LABELS[ndviTier]?.label || 'Unknown';
+  var ndviIconHtml = ndviTier === 'critical' ? ICONS.warning : ndviTier === 'watch' ? ICONS.alert : ICONS.check;
+  var ndviTrendText = ndviLabel;
+  if (declining > 0 || improving > 0) ndviTrendText += ' &middot; ' + declining + ' declining, ' + improving + ' improving';
 
   const gddVals = ff.map(f => f.weather_summary?.gdd_accumulated || 0);
   const avgGDD = gddVals.length ? Math.round(gddVals.reduce((a,b) => a+b, 0) / gddVals.length) : 0;
@@ -906,10 +914,10 @@ function renderKPIs() {
         '<div class="kpi-value">' + attention + ' / ' + total + '</div>' +
         '<div class="kpi-trend">' + critical + ' critical &middot; ' + watch + ' watch</div>' +
       '</div>' +
-      '<div class="kpi-card healthy">' +
+      '<div class="kpi-card ' + ndviTier + '">' +
         '<div class="kpi-label">' + ICONS.plant + ' Average NDVI</div>' +
         '<div class="kpi-value">' + avgNDVI + ' <span class="kpi-unit"></span></div>' +
-        '<div class="kpi-trend">' + trendIcon + ' ' + trendText + '</div>' +
+        '<div class="kpi-trend">' + ndviIconHtml + ' ' + ndviTrendText + '</div>' +
       '</div>' +
       gddCardHtml +
       '<div class="kpi-card ' + (maxRainDays > 7 ? 'watch' : 'healthy') + '">' +
@@ -1007,6 +1015,103 @@ function renderNDVITimeSeries() {
     .attr("text-anchor", "end").attr("font-size", "10px").attr("fill", "#E8A838")
     .text("Watch");
 
+  // Growth stage annotations (vertical lines from cumulative GDD)
+  var stageColors = {"VE":"#4CAF50","V6":"#8BC34A","VT":"#FFC107","R1":"#FF9800","R2":"#FF5722","R3":"#795548","R4":"#9C27B0","R5":"#3F51B5","R6":"#607D8B"};
+  var gddBaseF = CONFIG.gdd_base_temp_f;
+  var displayYear = state.filters.selectedYear;
+  var chartStart = xScale.domain()[0], chartEnd = xScale.domain()[1];
+  var weatherField = ff[0];
+  var dailyData = (weatherField.weather_daily || []).slice().sort(function(a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  if (dailyData.length > 0) {
+    // Determine planting date from last spring frost, fallback to April 20
+    var frostThresholdC = 0.0;
+    var defaultPlanting = new Date(displayYear + "-04-20");
+    var lastFrostDate = null;
+    dailyData.forEach(function(d) {
+      if (d.T2M_MIN <= frostThresholdC) {
+        var dObj = new Date(d.date);
+        var startOfYear = new Date(dObj.getFullYear(), 0, 0);
+        var doy = Math.floor((dObj - startOfYear) / 86400000);
+        if (doy <= 182) {
+          if (!lastFrostDate || dObj > lastFrostDate) {
+            lastFrostDate = dObj;
+          }
+        }
+      }
+    });
+    var plantingDate = lastFrostDate && lastFrostDate > defaultPlanting ? lastFrostDate : defaultPlanting;
+
+    // Compute cumulative GDD from planting date (days before planting get 0)
+    var cumGDD = 0;
+    dailyData.forEach(function(d) {
+      var dObj = new Date(d.date);
+      if (dObj < plantingDate) {
+        d._cumGDD = 0;
+      } else {
+        var dailyAvgF = (d.T2M_MIN + d.T2M_MAX) / 2 * 9 / 5 + 32;
+        cumGDD += Math.max(0, dailyAvgF - gddBaseF);
+        d._cumGDD = cumGDD;
+      }
+    });
+
+    // Draw Planting annotation at computed date
+    if (plantingDate >= chartStart && plantingDate <= chartEnd) {
+      var px = xScale(plantingDate);
+      svg.append("line")
+        .attr("x1", px).attr("x2", px)
+        .attr("y1", 0).attr("y2", height)
+        .attr("stroke", "#333").attr("stroke-width", 0.8)
+        .attr("stroke-dasharray", "3,3").attr("opacity", 0.45);
+      var plg = svg.append("g").attr("transform", "translate(" + px + ",0)");
+      var plt = plg.append("text")
+        .attr("x", 0).attr("y", 10)
+        .attr("text-anchor", "middle").attr("font-size", "8px")
+        .attr("font-weight", "600").attr("fill", "#333")
+        .text("Planting");
+      var plb = plt.node().getBBox();
+      plg.insert("rect", "text")
+        .attr("x", plb.x - 2).attr("y", plb.y - 1)
+        .attr("width", plb.width + 4).attr("height", plb.height + 2)
+        .attr("fill", "#fff").attr("opacity", 0.8).attr("rx", 2);
+    }
+
+    // Stage annotations (using _cumGDD which is 0 before planting)
+    var stages = CONFIG.growth_stages || {};
+    var stageKeys = Object.keys(stages);
+    stageKeys.forEach(function(stage) {
+      var threshold = stages[stage];
+      for (var i = 0; i < dailyData.length; i++) {
+        if (dailyData[i]._cumGDD >= threshold) {
+          var evDate = new Date(dailyData[i].date);
+          if (evDate >= chartStart && evDate <= chartEnd) {
+            var xPos = xScale(evDate);
+            var c = stageColors[stage] || "#666";
+            svg.append("line")
+              .attr("x1", xPos).attr("x2", xPos)
+              .attr("y1", 0).attr("y2", height)
+              .attr("stroke", c).attr("stroke-width", 0.8)
+              .attr("stroke-dasharray", "3,3").attr("opacity", 0.45);
+            var labelG = svg.append("g").attr("transform", "translate(" + xPos + ",0)");
+            var txt = labelG.append("text")
+              .attr("x", 0).attr("y", 10)
+              .attr("text-anchor", "middle").attr("font-size", "8px")
+              .attr("font-weight", "600").attr("fill", c)
+              .text(stage);
+            var bbox = txt.node().getBBox();
+            labelG.insert("rect", "text")
+              .attr("x", bbox.x - 2).attr("y", bbox.y - 1)
+              .attr("width", bbox.width + 4).attr("height", bbox.height + 2)
+              .attr("fill", "#fff").attr("opacity", 0.8)
+              .attr("rx", 2);
+          }
+          break;
+        }
+      }
+    });
+    // Clean up temporary property
+    dailyData.forEach(function(d) { delete d._cumGDD; });
+  }
+
   svg.append("g").attr("class", "axis").call(d3.axisLeft(yScale).ticks(6));
   svg.append("g").attr("class", "axis").attr("transform", "translate(0," + height + ")")
     .call(d3.axisBottom(xScale).ticks(8));
@@ -1023,21 +1128,61 @@ function renderNDVITimeSeries() {
   ff.forEach(f => {
     const series = f.ndvi_series;
     if (series.length < 2) return;
+    const last = series[series.length - 1];
+    const trendInfo = computeNDVITrend(series);
+    const latestNDVI = last.value.toFixed(3);
+    const ndviTip = "<strong>" + f.name + " (" + f.id + ")</strong><br>Latest NDVI: " + latestNDVI + " on " + last.date + "<br>Trend: " + trendInfo.trend + " (" + (trendInfo.pct >= 0 ? '+' : '') + trendInfo.pct + ")";
+
     svg.append("path")
       .datum(series)
       .attr("fill", "none")
       .attr("stroke", colorScale(f.id))
       .attr("stroke-width", 2)
       .attr("opacity", 0.8)
-      .attr("d", line);
+      .attr("d", line)
+      .style("cursor", "pointer")
+      .on("mouseenter", function(event) {
+        d3.select(this).attr("stroke-width", 4).attr("opacity", 1);
+        tooltip.classed("visible", true)
+          .html(ndviTip)
+          .style("left", (event.pageX + 12) + "px")
+          .style("top", (event.pageY - 28) + "px");
+      })
+      .on("mouseleave", function() {
+        d3.select(this).attr("stroke-width", 2).attr("opacity", 0.8);
+        tooltip.classed("visible", false);
+      })
+      .on("click", function(event) {
+        event.stopPropagation();
+        tooltip.classed("visible", true)
+          .html(ndviTip)
+          .style("left", (event.pageX + 12) + "px")
+          .style("top", (event.pageY - 28) + "px");
+      });
 
-    const last = series[series.length - 1];
     svg.append("text")
       .attr("x", xScale(new Date(last.date)) + 4)
       .attr("y", yScale(last.value))
       .attr("font-size", "10px")
       .attr("fill", colorScale(f.id))
-      .text(f.name);
+      .text(f.name)
+      .style("cursor", "pointer")
+      .on("mouseenter", function(event) {
+        tooltip.classed("visible", true)
+          .html(ndviTip)
+          .style("left", (event.pageX + 12) + "px")
+          .style("top", (event.pageY - 28) + "px");
+      })
+      .on("mouseleave", function() {
+        tooltip.classed("visible", false);
+      })
+      .on("click", function(event) {
+        event.stopPropagation();
+        tooltip.classed("visible", true)
+          .html(ndviTip)
+          .style("left", (event.pageX + 12) + "px")
+          .style("top", (event.pageY - 28) + "px");
+      });
   });
 }
 
@@ -1068,6 +1213,7 @@ function renderFieldRanking() {
 
   ff.forEach(f => {
     const color = THRESHOLD_LABELS[f.current_risk]?.color || "#999";
+    const barTip = "<strong>" + f.name + " (" + f.id + ")</strong><br>NDVI: " + f.current_ndvi.toFixed(3) + "<br>Risk: " + f.current_risk;
     svg.append("rect")
       .attr("x", 0)
       .attr("y", yScale(f.name))
@@ -1075,7 +1221,26 @@ function renderFieldRanking() {
       .attr("height", yScale.bandwidth())
       .attr("fill", color)
       .attr("rx", 3)
-      .attr("opacity", 0.85);
+      .attr("opacity", 0.85)
+      .style("cursor", "pointer")
+      .on("mouseenter", function(event) {
+        d3.select(this).attr("opacity", 1);
+        tooltip.classed("visible", true)
+          .html(barTip)
+          .style("left", (event.pageX + 12) + "px")
+          .style("top", (event.pageY - 28) + "px");
+      })
+      .on("mouseleave", function() {
+        d3.select(this).attr("opacity", 0.85);
+        tooltip.classed("visible", false);
+      })
+      .on("click", function(event) {
+        event.stopPropagation();
+        tooltip.classed("visible", true)
+          .html(barTip)
+          .style("left", (event.pageX + 12) + "px")
+          .style("top", (event.pageY - 28) + "px");
+      });
     svg.append("text")
       .attr("x", xScale(f.current_ndvi) - 4)
       .attr("y", yScale(f.name) + yScale.bandwidth() / 2)
@@ -1124,6 +1289,7 @@ function renderNDVIvsAWC() {
   const r = Math.min(12, width / ff.length * 0.8);
   ff.forEach(f => {
     const color = THRESHOLD_LABELS[f.current_risk]?.color || "#999";
+    const scatterTip = "<strong>" + f.name + " (" + f.id + ")</strong><br>NDVI: " + f.current_ndvi + "<br>AWC: " + f.soil.awc_in_in + " in/in<br>Risk: " + f.current_risk;
     svg.append("circle")
       .attr("cx", xScale(f.soil.awc_in_in))
       .attr("cy", yScale(f.current_ndvi))
@@ -1132,16 +1298,23 @@ function renderNDVIvsAWC() {
       .attr("opacity", 0.7)
       .attr("stroke", "#fff")
       .attr("stroke-width", 1.5)
-      .on("mouseenter", function() {
+      .on("mouseenter", function(event) {
         d3.select(this).attr("opacity", 1).attr("r", r * 1.4);
         tooltip.classed("visible", true)
-          .html("<strong>" + f.name + '</strong><br>NDVI: ' + f.current_ndvi + '<br>AWC: ' + f.soil.awc_in_in + ' in/in<br>Risk: ' + f.current_risk)
-          .style("left", (d3.event.pageX + 12) + "px")
-          .style("top", (d3.event.pageY - 28) + "px");
+          .html(scatterTip)
+          .style("left", (event.pageX + 12) + "px")
+          .style("top", (event.pageY - 28) + "px");
       })
       .on("mouseleave", function() {
         d3.select(this).attr("opacity", 0.7).attr("r", r);
         tooltip.classed("visible", false);
+      })
+      .on("click", function(event) {
+        event.stopPropagation();
+        tooltip.classed("visible", true)
+          .html(scatterTip)
+          .style("left", (event.pageX + 12) + "px")
+          .style("top", (event.pageY - 28) + "px");
       });
     svg.append("text")
       .attr("x", xScale(f.soil.awc_in_in))
@@ -1238,12 +1411,12 @@ function renderMap() {
       .attr("opacity", visible ? 1 : 0)
       .style("pointer-events", "none");
     if (!visible) return;
-    fp.on("mouseenter", function() {
+    fp.on("mouseenter", function(event) {
       op.attr("stroke-width", 6);
       tooltip.classed("visible", true)
-        .html("<strong>" + fieldName + "</strong><br>Risk: " + fieldRisk + "<br>NDVI: " + (fieldNdvi || '--') + "<br>Area: " + fieldAcres + " ac")
-        .style("left", (d3.event.pageX + 12) + "px")
-        .style("top", (d3.event.pageY - 28) + "px");
+        .html("<strong>" + fieldName + " (" + fieldId + ")</strong><br>Risk: " + fieldRisk + "<br>NDVI: " + (fieldNdvi || '--') + "<br>Area: " + fieldAcres + " ac")
+        .style("left", (event.pageX + 12) + "px")
+        .style("top", (event.pageY - 28) + "px");
     })
     .on("mouseleave", function() {
       op.attr("stroke-width", 3.5);
@@ -1318,7 +1491,9 @@ function renderGDD() {
     const daily = f.weather_daily || [];
     const byDate = {};
     daily.forEach(d => {
-      const gdd = Math.max(0, (d.T2M_MAX + d.T2M_MIN) / 2 - 10);
+      var tmax = +d.T2M_MAX, tmin = +d.T2M_MIN;
+      if (tmax == null || tmin == null || isNaN(tmax) || isNaN(tmin)) return;
+      const gdd = Math.max(0, (tmax + tmin) / 2 - 10);
       byDate[d.date] = (byDate[d.date] || 0) + gdd;
     });
     const sorted = Object.entries(byDate).sort((a, b) => a[0].localeCompare(b[0]));
@@ -1379,13 +1554,34 @@ function renderGDD() {
 
   fieldData.forEach(fd => {
     if (fd.current.length < 2) return;
+    var lastGDD = fd.current[fd.current.length - 1].gdd;
+    var gddTip = "<strong>" + fd.name + " (" + fd.id + ")</strong><br>GDD Accumulated: " + lastGDD + " &deg;F-days";
     svg.append("path")
       .datum(fd.current)
       .attr("fill", "none")
       .attr("stroke", colorScale(fd.id))
       .attr("stroke-width", 2)
       .attr("opacity", 0.7)
-      .attr("d", line);
+      .attr("d", line)
+      .style("cursor", "pointer")
+      .on("mouseenter", function(event) {
+        d3.select(this).attr("stroke-width", 4).attr("opacity", 1);
+        tooltip.classed("visible", true)
+          .html(gddTip)
+          .style("left", (event.pageX + 12) + "px")
+          .style("top", (event.pageY - 28) + "px");
+      })
+      .on("mouseleave", function() {
+        d3.select(this).attr("stroke-width", 2).attr("opacity", 0.7);
+        tooltip.classed("visible", false);
+      })
+      .on("click", function(event) {
+        event.stopPropagation();
+        tooltip.classed("visible", true)
+          .html(gddTip)
+          .style("left", (event.pageX + 12) + "px")
+          .style("top", (event.pageY - 28) + "px");
+      });
   });
 }
 
@@ -1417,6 +1613,9 @@ function renderSoil() {
 
   ff.forEach(f => {
     const color = THRESHOLD_LABELS[f.current_risk]?.color || "#7cb342";
+    const awcInfo = f.soil?.awc_in_in != null ? 'AWC: ' + f.soil.awc_in_in + ' in/in' : '';
+    const drainInfo = f.soil?.drainage_class || '';
+    const soilTip = "<strong>" + f.name + " (" + f.id + ")</strong><br>OM: " + f.soil.om_pct.toFixed(1) + "%" + (awcInfo ? '<br>' + awcInfo : '') + (drainInfo ? '<br>Drainage: ' + drainInfo : '');
     svg.append("rect")
       .attr("x", 0)
       .attr("y", yScale(f.name))
@@ -1424,7 +1623,26 @@ function renderSoil() {
       .attr("height", yScale.bandwidth())
       .attr("fill", color)
       .attr("rx", 3)
-      .attr("opacity", 0.85);
+      .attr("opacity", 0.85)
+      .style("cursor", "pointer")
+      .on("mouseenter", function(event) {
+        d3.select(this).attr("opacity", 1);
+        tooltip.classed("visible", true)
+          .html(soilTip)
+          .style("left", (event.pageX + 12) + "px")
+          .style("top", (event.pageY - 28) + "px");
+      })
+      .on("mouseleave", function() {
+        d3.select(this).attr("opacity", 0.85);
+        tooltip.classed("visible", false);
+      })
+      .on("click", function(event) {
+        event.stopPropagation();
+        tooltip.classed("visible", true)
+          .html(soilTip)
+          .style("left", (event.pageX + 12) + "px")
+          .style("top", (event.pageY - 28) + "px");
+      });
     svg.append("text")
       .attr("x", xScale(f.soil.om_pct) - 4)
       .attr("y", yScale(f.name) + yScale.bandwidth() / 2)
@@ -1474,7 +1692,7 @@ function renderActionList() {
   ff.forEach(f => {
     const tl = THRESHOLD_LABELS[f.current_risk];
     const ndviInfo = f.current_ndvi != null ? 'NDVI: ' + f.current_ndvi.toFixed(3) : '';
-    const trendInfo = f.ndvi_trend_pct ? ' (' + (f.ndvi_trend_pct >= 0 ? '+' : '') + f.ndvi_trend_pct + '%)' : '';
+    const trendInfo = f.ndvi_trend_pct ? ' (' + (f.ndvi_trend_pct >= 0 ? '+' : '') + f.ndvi_trend_pct + ')' : '';
     const soilInfo = f.soil?.awc_in_in != null ? 'AWC ' + f.soil.awc_in_in + ' in/in' : '';
     const action = f.current_risk === 'critical'
       ? 'Scout immediately -- consider irrigation or tissue sampling.'
@@ -1600,6 +1818,10 @@ function renderAll() {
 
 // ===== INIT =====
 state.subscribe(renderAll);
+
+document.addEventListener("click", function() {
+  tooltip.classed("visible", false);
+});
 
 document.getElementById("reset-btn").addEventListener("click", resetFilters);
 
