@@ -422,14 +422,12 @@ def build_html(data_json_str, d3_min_js):
     grower_name = data['summary'].get('grower_name', 'Grower')
     total_fields = data['summary']['total_fields']
     generated_at = data['summary']['generated_at']
-    declining_count = data['summary']['declining_count']
 
     template = HTML_TEMPLATE
     template = template.replace("__D3_MIN_JS__", d3_min_js)
     template = template.replace("__GROWER_NAME__", grower_name)
     template = template.replace("__TOTAL_FIELDS__", str(total_fields))
     template = template.replace("__GENERATED_AT__", generated_at)
-    template = template.replace("__DECLINING_COUNT__", str(declining_count))
     template = template.replace("__FIELDS_JSON__", fields_json)
     template = template.replace("__SUMMARY_JSON__", summary_json)
     template = template.replace("__CONFIG_JSON__", config_json)
@@ -570,7 +568,7 @@ svg.icon-lg { width: 24px; height: 24px; }
 
   <div class="chart-grid" id="ndvi-time-series-section">
     <div class="chart-card chart-full">
-      <h3>NDVI Declining in __DECLINING_COUNT__ Fields</h3>
+      <h3 id="ndvi-declining-title">NDVI Declining in 0 Fields</h3>
       <div class="chart-container" id="ndvi-time-series"></div>
     </div>
   </div>
@@ -680,7 +678,11 @@ function computeWeatherSummaries(weatherRecords, config) {
   var daysSince = null;
   if (recentRain.length) {
     var lastRain = recentRain[recentRain.length - 1].date;
-    daysSince = Math.round((new Date() - new Date(lastRain)) / 86400000);
+    var lastRainDate = new Date(lastRain);
+    var now = new Date();
+    var utcNow = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+    var utcRain = Date.UTC(lastRainDate.getFullYear(), lastRainDate.getMonth(), lastRainDate.getDate());
+    daysSince = Math.floor((utcNow - utcRain) / 86400000);
   }
   return { gdd_accumulated: Math.round(gddTotal), days_since_significant_rain: daysSince, total_precip_mm: Math.round(precipTotal) };
 }
@@ -814,6 +816,12 @@ function renderKPIs() {
 
   const improving = ff.filter(f => f.ndvi_trend === 'improving').length;
   const declining = ff.filter(f => f.ndvi_trend === 'declining').length;
+  var anyDeclining = ff.filter(function(f) {
+    var s = f.ndvi_series;
+    if (!s || s.length < 2) return false;
+    var recent = s.slice(-3);
+    return (recent[recent.length - 1].value - recent[0].value) < 0;
+  }).length;
 
   var ndviTier = 'healthy';
   if (avgNDVI < CONFIG.stress_threshold) ndviTier = 'critical';
@@ -821,7 +829,7 @@ function renderKPIs() {
   var ndviLabel = THRESHOLD_LABELS[ndviTier]?.label || 'Unknown';
   var ndviIconHtml = ndviTier === 'critical' ? ICONS.warning : ndviTier === 'watch' ? ICONS.alert : ICONS.check;
   var ndviTrendText = ndviLabel;
-  if (declining > 0 || improving > 0) ndviTrendText += ' &middot; ' + declining + ' declining, ' + improving + ' improving';
+  if (anyDeclining > 0 || improving > 0) ndviTrendText += ' &middot; ' + anyDeclining + ' declining, ' + improving + ' improving';
 
   const gddVals = ff.map(f => f.weather_summary?.gdd_accumulated || 0);
   const avgGDD = gddVals.length ? Math.round(gddVals.reduce((a,b) => a+b, 0) / gddVals.length) : 0;
@@ -899,6 +907,8 @@ function renderNDVITimeSeries() {
   const container = d3.select("#ndvi-time-series");
   container.html("");
   const ff = state.getFilteredFields();
+  var decliningCount = ff.filter(function(f) { return f.ndvi_trend === 'declining'; }).length;
+  d3.select("#ndvi-declining-title").text("NDVI Declining in " + decliningCount + " Fields");
   if (!ff.length) return;
 
   const rect = container.node().getBoundingClientRect();
@@ -1660,7 +1670,8 @@ function renderNarrative() {
   const awcVals = ff.filter(f => f.soil?.awc_in_in != null).map(f => f.soil.awc_in_in);
   const omVals = ff.filter(f => f.soil?.om_pct != null).map(f => f.soil.om_pct);
   const scatterCount = ff.filter(f => f.current_ndvi != null && f.soil?.awc_in_in != null).length;
-  const gdd = ff[0]?.weather_summary?.gdd_accumulated || 0;
+  const gddVals = ff.map(f => f.weather_summary?.gdd_accumulated || 0);
+  const gdd = gddVals.length ? Math.round(gddVals.reduce((a,b) => a+b, 0) / gddVals.length) : 0;
   const normal = ff[0]?.weather_summary?.gdd_normal || 0;
   const gddDiff = gdd - normal;
 
