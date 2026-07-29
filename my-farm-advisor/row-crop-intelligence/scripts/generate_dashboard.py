@@ -105,13 +105,43 @@ def read_soil_summary(field_dir):
         return rows[0]
     return None
 
-def read_weather_csv(field_dir):
+_WEATHER_ROUND_COLS = {
+    "T2M": 1, "T2M_MAX": 1, "T2M_MIN": 1, "PRECTOTCORR": 1,
+    "RH2M": 1, "WS10M": 1, "ALLSKY_SFC_SW_DWN": 2,
+}
+
+
+def _grid_key_from_latlon(lat: float, lon: float) -> str:
+    """Mirror of nasa_power.assign_power_grid rounding for backward compat.
+
+    Called only when weather CSVs lack a grid_key column (pre-migration data).
+    Once all CSVs are regenerated after the pipeline change this can be removed.
+    """
+    grid_lat = round(lat / 0.5) * 0.5
+    grid_lon = round(lon / 0.625) * 0.625
+    return f"{grid_lat:.3f}:{grid_lon:.3f}"
+
+
+def read_weather_records(field_dir):
     path = field_dir / "weather" / "daily_weather.csv"
     if not path.exists():
-        return []
+        return [], None
     df = pd.read_csv(path)
     df = df.sort_values("date")
-    return df.to_dict("records")
+    today = date.today()
+    df = df[pd.to_datetime(df["date"]).dt.date <= today]
+    for col, decimals in _WEATHER_ROUND_COLS.items():
+        if col in df.columns:
+            df[col] = df[col].round(decimals)
+    if "grid_key" in df.columns and not df["grid_key"].isna().all():
+        grid_key = str(df["grid_key"].iloc[0])
+    elif "lat" in df.columns and "lon" in df.columns:
+        grid_key = _grid_key_from_latlon(
+            float(df["lat"].iloc[0]), float(df["lon"].iloc[0])
+        )
+    else:
+        grid_key = None
+    return df.to_dict("records"), grid_key
 
 def compute_scene_ndvi_time_series(field_dir, data_root):
     """Compute per-scene mean NDVI from Sentinel and Landsat GeoTIFFs."""
@@ -243,7 +273,7 @@ def read_crop_rotation(farm_root):
             result[row["field_id"]] = row.get("predicted_next_crop", "")
     return result
 
-def extract_field_data(field_dir, farm_root, data_root, current_crop=None):
+def extract_field_data(field_dir, farm_root, data_root, current_crop=None, weather_cache=None):
     field_json_path = field_dir / "field.json"
     field_meta = {}
     if field_json_path.exists():
@@ -253,7 +283,9 @@ def extract_field_data(field_dir, farm_root, data_root, current_crop=None):
     cards = read_ndvi_card_summary(field_dir)
     yearly = read_ndvi_yearly_summary(field_dir)
     soil = read_soil_summary(field_dir)
-    weather = read_weather_csv(field_dir)
+    weather, grid_key = read_weather_records(field_dir)
+    if weather_cache is not None and grid_key and grid_key not in weather_cache:
+        weather_cache[grid_key] = weather
     ndvi_series = compute_scene_ndvi_time_series(field_dir, data_root)
     weather_summ = compute_weather_summaries(weather)
 
@@ -323,7 +355,7 @@ def extract_field_data(field_dir, farm_root, data_root, current_crop=None):
         "ndvi_peak_95": ndvi_peak,
         "soil": soil_data,
         "weather_summary": weather_summ,
-        "weather_daily": weather,
+        "weather_series_id": grid_key or field_id,
         "cdl_crops": cdl_crops,
         "current_crop": current_crop,
     }
@@ -365,9 +397,31 @@ def build_summary(fields):
         "grower_name": "",
     }
 
+def _weather_to_columnar(records):
+    """Convert array-of-objects weather records to columnar format.
+
+    Before: [{"date": "2021-01-01", "T2M": -1.6, "T2M_MAX": 0.6, ...}, ...]
+    After:  {"dates": ["2021-01-01", ...], "T2M": [-1.6, ...], "T2M_MAX": [0.6, ...]}
+    """
+    if not records:
+        return {"dates": []}
+    columnar: dict[str, list] = {"dates": []}
+    sample = records[0]
+    for k in sample:
+        if k in ("field_id", "lat", "lon", "grid_key"):
+            continue
+        if k == "date":
+            columnar["dates"] = [r["date"] for r in records]
+        else:
+            columnar[k] = [r.get(k) for r in records]
+    return columnar
+
+
 def extract_all_field_data(grower_root, data_root):
     all_fields = []
     grower_name = grower_root.name
+    weather_cache: dict[str, list[dict]] = {}
+
     for farm_root in farm_paths(grower_root):
         farm_json_path = farm_root / "farm.json"
         if farm_json_path.exists():
@@ -375,7 +429,11 @@ def extract_all_field_data(grower_root, data_root):
             grower_name = farm_meta.get("display_name", grower_name)
         rotation_map = read_crop_rotation(farm_root)
         for field_dir in field_paths(farm_root):
-            fd = extract_field_data(field_dir, farm_root, data_root, current_crop=rotation_map.get(field_dir.name))
+            fd = extract_field_data(
+                field_dir, farm_root, data_root,
+                current_crop=rotation_map.get(field_dir.name),
+                weather_cache=weather_cache,
+            )
             if fd["geometry"]:
                 all_fields.append(fd)
 
@@ -383,12 +441,26 @@ def extract_all_field_data(grower_root, data_root):
     for i, fd in enumerate(all_fields, 1):
         fd["name"] = f"Field {i}"
 
-    return all_fields, grower_name
+    # Deduplicated columnar weather series keyed by grid_key
+    weather_series = {
+        gk: _weather_to_columnar(records)
+        for gk, records in weather_cache.items()
+    }
+
+    return all_fields, grower_name, weather_series
 
 # ---------------------------------------------------------------------------
 # HTML generation
 # ---------------------------------------------------------------------------
 def download_d3():
+    local_custom = Path(__file__).parent / "d3-custom.min.js"
+    if local_custom.exists():
+        print(f"  Using local custom bundle ({local_custom.stat().st_size // 1024} KB)")
+        return local_custom.read_text(encoding="utf-8")
+    local_full = Path(__file__).parent / "d3.v7.min.js"
+    if local_full.exists():
+        print(f"  Using local full bundle ({local_full.stat().st_size // 1024} KB)")
+        return local_full.read_text(encoding="utf-8")
     urls = [
         "https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js",
         "https://unpkg.com/d3@7/dist/d3.min.js",
@@ -401,15 +473,11 @@ def download_d3():
                 return resp.read().decode("utf-8")
         except Exception:
             continue
-    # Fallback: try to find from local
-    local_d3 = Path(__file__).parent / "d3.v7.min.js"
-    if local_d3.exists():
-        return local_d3.read_text()
     raise RuntimeError("Could not download D3 from any CDN and no local fallback found")
 
 
 
-def build_html(data_json_str, d3_min_js):
+def build_html(data_json_str, d3_min_js, weather_series=None):
     config = CROP_CONFIG["corn"]
     data = json.loads(data_json_str)
 
@@ -418,6 +486,7 @@ def build_html(data_json_str, d3_min_js):
     config_json = json.dumps(config, default=str)
     threshold_labels_json = json.dumps(THRESHOLD_LABELS, default=str)
     crop_config_json = json.dumps(CROP_CONFIG, default=str)
+    weather_series_json = json.dumps(weather_series or {}, default=str)
 
     grower_name = data['summary'].get('grower_name', 'Grower')
     total_fields = data['summary']['total_fields']
@@ -433,6 +502,7 @@ def build_html(data_json_str, d3_min_js):
     template = template.replace("__CONFIG_JSON__", config_json)
     template = template.replace("__THRESHOLD_LABELS_JSON__", threshold_labels_json)
     template = template.replace("__CROP_CONFIG_JSON__", crop_config_json)
+    template = template.replace("__WEATHER_SERIES_JSON__", weather_series_json)
     return template
 
 
@@ -651,6 +721,7 @@ const CONFIG = CROP_CONFIG.corn;
 const THRESHOLD_LABELS = __THRESHOLD_LABELS_JSON__;
 const ALL_FIELDS = __FIELDS_JSON__;
 const SUMMARY = __SUMMARY_JSON__;
+const WEATHER_SERIES = __WEATHER_SERIES_JSON__;
 
 // ===== ICONS =====
 const ICONS = {
@@ -693,27 +764,25 @@ function computeNDVITrend(ndviSeries) {
 }
 
 function computeWeatherSummaries(weatherRecords, config) {
-  if (!weatherRecords || !weatherRecords.length) return { gdd_accumulated: 0, days_since_significant_rain: null };
+  if (!weatherRecords || !weatherRecords.dates || !weatherRecords.dates.length) return { gdd_accumulated: 0, days_since_significant_rain: null };
   var significantMm = config.precip_significant_mm || 2.54;
   var gddTotal = 0;
   var precipTotal = 0;
-  weatherRecords.forEach(function(d) {
-    var tmax = +d.T2M_MAX, tmin = +d.T2M_MIN;
+  var lastRainIdx = -1;
+  for (var i = 0; i < weatherRecords.dates.length; i++) {
+    var tmax = +weatherRecords.T2M_MAX[i], tmin = +weatherRecords.T2M_MIN[i];
     if (tmax != null && tmin != null && !isNaN(tmax) && !isNaN(tmin)) {
       gddTotal += Math.max(0, (tmax + tmin) / 2 - 10);
     }
-    var p = +d.PRECTOTCORR;
-    if (!isNaN(p)) precipTotal += p;
-  });
-  var sorted = weatherRecords.slice().sort(function(a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
-  var recentRain = sorted.filter(function(d) {
-    var p = +d.PRECTOTCORR;
-    return !isNaN(p) && p >= significantMm;
-  });
+    var p = +weatherRecords.PRECTOTCORR[i];
+    if (!isNaN(p)) {
+      precipTotal += p;
+      if (p >= significantMm) lastRainIdx = i;
+    }
+  }
   var daysSince = null;
-  if (recentRain.length) {
-    var lastRain = recentRain[recentRain.length - 1].date;
-    var lastRainDate = new Date(lastRain);
+  if (lastRainIdx >= 0) {
+    var lastRainDate = new Date(weatherRecords.dates[lastRainIdx]);
     var now = new Date();
     var utcNow = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
     var utcRain = Date.UTC(lastRainDate.getFullYear(), lastRainDate.getMonth(), lastRainDate.getDate());
@@ -755,9 +824,23 @@ const state = {
   subscribe(fn) { this._listeners.push(fn); return () => { this._listeners = this._listeners.filter(l => l !== fn); }; },
   publish() { this._listeners.forEach(fn => fn()); },
   getFilteredWeather(field) {
-    var data = field.weather_daily || [];
+    var data = WEATHER_SERIES[field.weather_series_id];
+    if (!data || !data.dates) return {dates: [], T2M: [], T2M_MAX: [], T2M_MIN: [], PRECTOTCORR: [], ALLSKY_SFC_SW_DWN: [], RH2M: [], WS10M: []};
     if (this.filters.selectedYear) {
-      data = data.filter(function(d) { return d.date.startsWith(this.filters.selectedYear); }.bind(this));
+      var year = this.filters.selectedYear;
+      var indices = [];
+      for (var i = 0; i < data.dates.length; i++) {
+        if (data.dates[i].startsWith(year)) indices.push(i);
+      }
+      var result = {};
+      for (var key in data) {
+        if (data.hasOwnProperty && data.hasOwnProperty(key)) {
+          result[key] = indices.map(function(idx) { return data[key][idx]; });
+        } else {
+          result[key] = indices.map(function(idx) { return data[key][idx]; });
+        }
+      }
+      return result;
     }
     return data;
   },
@@ -783,7 +866,6 @@ const state = {
         ndvi_trend_pct: trend.pct,
         weather_summary: Object.assign({}, f.weather_summary, weatherSumm),
         ndvi_series: ndviSeries,
-        weather_daily: weatherData,
       });
     });
   },
@@ -1011,15 +1093,15 @@ function renderNDVITimeSeries() {
   var displayYear = state.filters.selectedYear;
   var chartStart = xScale.domain()[0], chartEnd = xScale.domain()[1];
   var weatherField = ff[0];
-  var dailyData = (weatherField.weather_daily || []).slice().sort(function(a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
-  if (dailyData.length > 0) {
+  var dailyData = WEATHER_SERIES[weatherField.weather_series_id] || {dates: [], T2M_MAX: [], T2M_MIN: []};
+  if (dailyData.dates.length > 0) {
     // Determine planting date from last spring frost, fallback to April 20
     var frostThresholdC = 0.0;
     var defaultPlanting = new Date(displayYear + "-04-20");
     var lastFrostDate = null;
-    dailyData.forEach(function(d) {
-      if (d.T2M_MIN <= frostThresholdC) {
-        var dObj = new Date(d.date);
+    for (var i = 0; i < dailyData.dates.length; i++) {
+      if (dailyData.T2M_MIN[i] <= frostThresholdC) {
+        var dObj = new Date(dailyData.dates[i]);
         var startOfYear = new Date(dObj.getFullYear(), 0, 0);
         var doy = Math.floor((dObj - startOfYear) / 86400000);
         if (doy <= 182) {
@@ -1028,21 +1110,22 @@ function renderNDVITimeSeries() {
           }
         }
       }
-    });
+    }
     var plantingDate = lastFrostDate && lastFrostDate > defaultPlanting ? lastFrostDate : defaultPlanting;
 
     // Compute cumulative GDD from planting date (days before planting get 0)
     var cumGDD = 0;
-    dailyData.forEach(function(d) {
-      var dObj = new Date(d.date);
+    var cumGDDArr = [];
+    for (var i = 0; i < dailyData.dates.length; i++) {
+      var dObj = new Date(dailyData.dates[i]);
       if (dObj < plantingDate) {
-        d._cumGDD = 0;
+        cumGDDArr.push(0);
       } else {
-        var dailyAvgF = (d.T2M_MIN + d.T2M_MAX) / 2 * 9 / 5 + 32;
+        var dailyAvgF = (dailyData.T2M_MIN[i] + dailyData.T2M_MAX[i]) / 2 * 9 / 5 + 32;
         cumGDD += Math.max(0, dailyAvgF - gddBaseF);
-        d._cumGDD = cumGDD;
+        cumGDDArr.push(cumGDD);
       }
-    });
+    }
 
     // Draw Planting annotation at computed date
     if (plantingDate >= chartStart && plantingDate <= chartEnd) {
@@ -1065,14 +1148,14 @@ function renderNDVITimeSeries() {
         .attr("fill", "#fff").attr("opacity", 0.8).attr("rx", 2);
     }
 
-    // Stage annotations (using _cumGDD which is 0 before planting)
+    // Stage annotations
     var stages = CONFIG.growth_stages || {};
     var stageKeys = Object.keys(stages);
     stageKeys.forEach(function(stage) {
       var threshold = stages[stage];
-      for (var i = 0; i < dailyData.length; i++) {
-        if (dailyData[i]._cumGDD >= threshold) {
-          var evDate = new Date(dailyData[i].date);
+      for (var i = 0; i < cumGDDArr.length; i++) {
+        if (cumGDDArr[i] >= threshold) {
+          var evDate = new Date(dailyData.dates[i]);
           if (evDate >= chartStart && evDate <= chartEnd) {
             var xPos = xScale(evDate);
             var c = stageColors[stage] || "#666";
@@ -1098,8 +1181,6 @@ function renderNDVITimeSeries() {
         }
       }
     });
-    // Clean up temporary property
-    dailyData.forEach(function(d) { delete d._cumGDD; });
   }
 
   svg.append("g").attr("class", "axis").call(d3.axisLeft(yScale).ticks(6));
@@ -1459,14 +1540,14 @@ function renderGDD() {
 
   const displayYear = state.filters.selectedYear || String(new Date().getFullYear());
   const fieldData = ff.map(f => {
-    const daily = f.weather_daily || [];
+    const daily = WEATHER_SERIES[f.weather_series_id] || {dates: [], T2M_MAX: [], T2M_MIN: []};
     const byDate = {};
-    daily.forEach(d => {
-      var tmax = +d.T2M_MAX, tmin = +d.T2M_MIN;
-      if (tmax == null || tmin == null || isNaN(tmax) || isNaN(tmin)) return;
+    for (var i = 0; i < daily.dates.length; i++) {
+      var tmax = +daily.T2M_MAX[i], tmin = +daily.T2M_MIN[i];
+      if (tmax == null || tmin == null || isNaN(tmax) || isNaN(tmin)) continue;
       const gdd = Math.max(0, (tmax + tmin) / 2 - 10);
-      byDate[d.date] = (byDate[d.date] || 0) + gdd;
-    });
+      byDate[daily.dates[i]] = (byDate[daily.dates[i]] || 0) + gdd;
+    }
     const sorted = Object.entries(byDate).sort((a, b) => a[0].localeCompare(b[0]));
     let cum = 0;
     const currentSeries = [];
@@ -1839,8 +1920,8 @@ def main():
         sys.exit(1)
 
     print(f"Reading data for grower: {args.grower}")
-    fields, grower_name = extract_all_field_data(grower_root, data_root)
-    print(f"  Found {len(fields)} fields")
+    fields, grower_name, weather_series = extract_all_field_data(grower_root, data_root)
+    print(f"  Found {len(fields)} fields, {len(weather_series)} unique weather series")
 
     summary = build_summary(fields)
     summary["grower_name"] = grower_name
@@ -1857,7 +1938,7 @@ def main():
     d3_js = download_d3()
 
     print(f"Generating dashboard HTML...")
-    html = build_html(data_json_str, d3_js)
+    html = build_html(data_json_str, d3_js, weather_series=weather_series)
 
     # Determine output path
     if args.output:
