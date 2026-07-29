@@ -450,7 +450,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 .header .header-main { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
 .header h1 { font-size: 1.4rem; font-weight: 600; }
 .header .subtitle { font-size: 0.85rem; color: #b8d4e8; margin-top: 4px; }
-.header .freshness { font-size: 0.75rem; color: #8899aa; margin-top: 8px; }
+.header .freshness { font-size: 0.75rem; color: #8899aa; }
+.header-subrow { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
 .header .header-filters { display: flex; gap: 14px; align-items: flex-start; flex-shrink: 0; }
 .header .header-filters .filter-group { display: flex; flex-direction: column; gap: 3px; }
 .header .header-filters .filter-group label { font-size: 0.7rem; font-weight: 600; color: #b8d4e8; text-transform: uppercase; letter-spacing: 0.04em; }
@@ -458,6 +459,20 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 .header .grower-name { color: #F5D76E; }
 .header .header-filters button { padding: 4px 14px; background: #4A7FB5; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.75rem; font-weight: 500; margin-top: 16px; }
 .header .header-filters button:hover { background: #3a6fa5; }
+.header-legend-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 0.8rem; color: #b8d4e8; text-decoration: none; user-select: none; }
+.header-legend-toggle:hover { color: #fff; }
+.header-legend-toggle .chevron { display: inline-block; transition: transform 0.25s; font-size: 0.7rem; }
+.header-legend-toggle .chevron.open { transform: rotate(90deg); }
+.header-legend-content { max-height: 0; overflow: hidden; transition: max-height 0.3s ease-in-out, padding 0.3s ease-in-out; padding: 0 0; }
+.header-legend-content.open { max-height: 200px; padding: 10px 0 4px 0; }
+.header-legend-body { display: flex; gap: 40px; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 10px; }
+.header-legend-body > div { flex: 1; }
+.header-legend-body h4 { font-size: 0.72rem; font-weight: 600; color: #8899aa; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 5px; }
+.header-legend-body .legend-column .legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.78rem; color: #c8d8e8; margin-bottom: 3px; white-space: nowrap; }
+.header-legend-body .legend-column .legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+.header-legend-body .sources-column { font-size: 0.78rem; color: #c8d8e8; }
+.header-legend-body .sources-column div { margin-bottom: 2px; }
+.header-legend-body .sources-column .method-label { color: #8899aa; }
 
 .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .kpi-card { background: #fff; border-radius: 8px; padding: 16px 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
@@ -533,7 +548,6 @@ svg.icon-lg { width: 24px; height: 24px; }
     <div class="header-main">
       <div>
         <h1><span class="grower-name">__GROWER_NAME__</span> - Corn Health Intelligence Dashboard</h1>
-        <div class="freshness">Generated: __GENERATED_AT__</div>
       </div>
       <div class="header-filters">
         <div class="filter-group">
@@ -545,6 +559,27 @@ svg.icon-lg { width: 24px; height: 24px; }
           <select id="year-select"></select>
         </div>
         <button id="reset-btn">Reset</button>
+      </div>
+    </div>
+    <div class="header-subrow">
+      <div class="freshness">Generated: __GENERATED_AT__</div>
+      <a class="header-legend-toggle" onclick="toggleLegend()">
+        Dashboard Legend <span class="chevron" id="legend-chevron">&#9654;</span>
+      </a>
+    </div>
+    <div class="header-legend-content" id="legend-content">
+      <div class="header-legend-body">
+        <div class="legend-column">
+          <h4>Risk Tiers</h4>
+          <div id="legend-risk-tiers"></div>
+        </div>
+        <div class="sources-column">
+          <h4>Sources</h4>
+          <div><span class="method-label">NDVI:</span> mean per-scene from Sentinel-2/Landsat 8-9</div>
+          <div><span class="method-label">GDD:</span> base 50&deg;F from daily Tmin/Tmax</div>
+          <div><span class="method-label">Soil:</span> NRCS SSURGO (AWS, OM%)</div>
+          <div><span class="method-label">Weather:</span> NASA POWER daily</div>
+        </div>
       </div>
     </div>
   </div>
@@ -1714,30 +1749,29 @@ function renderNarrative() {
 
 // ===== FOOTER =====
 function renderFooter() {
-  const html =
-    '<div>' +
-      '<h4>Risk Tiers</h4>' +
-      '<div>' +
-        '<span class="legend-item"><span class="legend-swatch" style="background:#4A7FB5"></span> Healthy (NDVI >= 0.7)</span>' +
-        '<span class="legend-item"><span class="legend-swatch" style="background:#E8A838"></span> Watch (NDVI 0.5-0.7 or declining >5%)</span>' +
-        '<span class="legend-item"><span class="legend-swatch" style="background:#D95F4A"></span> Critical (NDVI < 0.5 or declining >10%)</span>' +
-      '</div>' +
-    '</div>' +
-    '<div>' +
-      '<h4>Methods</h4>' +
-      '<div style="font-size:0.75rem; color:#999;">' +
-        'NDVI: mean per-scene from Sentinel-2/Landsat 8-9.<br>' +
-        'GDD: base 50&deg;F from daily Tmin/Tmax<br>' +
-        'Soil: NRCS SSURGO (AWS, OM%)<br>' +
-        'Weather: NASA POWER daily' +
-      '</div>' +
-    '</div>' +
-    '<div>' +
-      '<h4>Data Freshness</h4>' +
-      '<div>Generated: ' + SUMMARY.generated_at + '</div>' +
-      '<div style="font-size:0.75rem; color:#999;">Data up to latest available scene</div>' +
-    '</div>';
-  d3.select("#footer-section").html(html);
+  d3.select("#footer-section").html("");
+}
+
+// ===== HEADER LEGEND =====
+function renderHeaderLegend() {
+  var tiers = [
+    { key: "healthy", desc: "NDVI >= " + CONFIG.watch_threshold },
+    { key: "watch", desc: "NDVI " + CONFIG.stress_threshold + "-" + CONFIG.watch_threshold + " or declining >" + CONFIG.ndvi_decline_warning_pct + "%" },
+    { key: "critical", desc: "NDVI < " + CONFIG.stress_threshold + " or declining >" + CONFIG.ndvi_decline_critical_pct + "%" }
+  ];
+  var html = "";
+  tiers.forEach(function(t) {
+    var tl = THRESHOLD_LABELS[t.key];
+    html += '<div class="legend-item"><span class="legend-swatch" style="background:' + tl.color + '"></span>' + tl.label + ' (' + t.desc + ')</div>';
+  });
+  d3.select("#legend-risk-tiers").html(html);
+}
+
+function toggleLegend() {
+  var content = document.getElementById("legend-content");
+  var chevron = document.getElementById("legend-chevron");
+  content.classList.toggle("open");
+  chevron.classList.toggle("open");
 }
 
 // ===== RESET =====
@@ -1758,6 +1792,7 @@ function renderAll() {
   renderSoil();
   renderActionList();
   renderNarrative();
+  renderHeaderLegend();
   renderFooter();
 }
 
