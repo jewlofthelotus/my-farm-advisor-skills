@@ -608,6 +608,9 @@ svg.icon-lg { width: 24px; height: 24px; }
   .map-action-row { grid-template-columns: 1fr; }
   .header .header-main { flex-direction: column; }
   .header .header-filters { flex-wrap: wrap; }
+  .header .header-subrow { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .header-legend-body { flex-direction: column; gap: 20px; }
+  .header-legend-content.open { max-height: 280px; }
   .footer { flex-direction: column; text-align: center; gap: 8px; }
 }
 </style>
