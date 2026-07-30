@@ -117,11 +117,15 @@ The runtime data for `il-grower` (Iroquois County, Illinois) contains:
 
 ### Risk Classification Logic
 
-- **Healthy** — NDVI >= 0.7 and stable or improving over last 2 scenes
-- **Watch** — NDVI between 0.5 and 0.7, or declining >5% over last 2 scenes
+- **Healthy** — NDVI >= 0.7 (scaled by growth stage before VT; see Assumptions below) and stable or improving over last 2 scenes
+- **Watch** — NDVI between 0.5 and dynamic Healthy threshold, or declining >5% over last 2 scenes
 - **Critical** — NDVI < 0.5, or declining >10% over last 2 scenes
 
 Thresholds are derived from the `CROP_CONFIG` block and can be adjusted per crop type.
+
+### Assumptions & Limitations
+
+- **Growth-stage-scaled Healthy threshold.** Before tasseling (VT, ~1130 GDD), the Healthy NDVI threshold is linearly scaled from 30% of 0.7 at planting to the full 0.7 at VT. This accounts for incomplete canopy closure in early vegetative stages, preventing fields from being structurally capped at Watch simply because peak NDVI is unreachable before canopy closure. This is a working geometric model, not a research-validated NDVI-by-growth-stage curve for this specific hybrid or region. Calibration to actual field trials per hybrid maturity group would improve accuracy.
 
 ## AI Usage Documentation
 

@@ -334,7 +334,17 @@ def _stage_desc(stage_name):
     }.get(stage_name, stage_name)
 
 
-def classify_risk(ndvi_series, config, phase="building"):
+def healthy_threshold_for_stage(accumulated_gdd, config):
+    """Scale the Healthy (watch_threshold) by growth stage progress toward VT."""
+    stages = config["growth_stages"]
+    full_threshold = config["watch_threshold"]
+    if accumulated_gdd >= stages["VT"]:
+        return full_threshold
+    progress = accumulated_gdd / stages["VT"]
+    return full_threshold * max(progress, 0.3)
+
+
+def classify_risk(ndvi_series, config, phase="building", accumulated_gdd=None):
     """Classify field NDVI risk, gated by growth phase.
 
     Phase behavior:
@@ -352,12 +362,12 @@ def classify_risk(ndvi_series, config, phase="building"):
 
     latest = ndvi_series[-1]["value"]
     threshold = config["stress_threshold"]
-    watch_threshold = config["watch_threshold"]
 
     # Absolute NDVI floor — active in building and reproductive_early
     if latest < threshold:
         return "critical"
-    if latest < watch_threshold:
+    healthy_threshold = healthy_threshold_for_stage(accumulated_gdd or 0, config)
+    if latest < healthy_threshold:
         return "watch"
 
     # Decline-based promotions — only in building phase
@@ -458,7 +468,7 @@ def extract_field_data(field_dir, farm_root, data_root, current_crop=None, weath
     growth_info = compute_growth_phase(weather, cc)
     phase = growth_info["phase"]
 
-    risk = classify_risk(year_ndvi_series, cc, phase=phase)
+    risk = classify_risk(year_ndvi_series, cc, phase=phase, accumulated_gdd=growth_info["cum_gdd_f"])
     trend, trend_pct = compute_ndvi_trend(year_ndvi_series, phase=phase)
 
     current_ndvi = round(year_ndvi_series[-1]["value"], 3) if year_ndvi_series else None
@@ -688,7 +698,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 .header-legend-toggle .chevron { display: inline-block; transition: transform 0.25s; font-size: 0.7rem; }
 .header-legend-toggle .chevron.open { transform: rotate(90deg); }
 .header-legend-content { max-height: 0; overflow: hidden; transition: max-height 0.3s ease-in-out, padding 0.3s ease-in-out; padding: 0 0; }
-.header-legend-content.open { max-height: 200px; padding: 10px 0 4px 0; }
+.header-legend-content.open { max-height: 280px; padding: 10px 0 4px 0; }
 .header-legend-body { display: flex; gap: 40px; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 10px; }
 .header-legend-body > div { flex: 1; }
 .header-legend-body h4 { font-size: 0.72rem; font-weight: 600; color: #8899aa; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 5px; }
@@ -1003,9 +1013,20 @@ function computeCurrentGDDFromWeather(weatherData, displayYear, config) {
  *   reproductive_early → absolute floors only (0.50 / 0.70); decline flags suppressed
  *   reproductive_late  → always 'healthy' (universal senescence, not diagnostic)
  */
-function classifyRisk(ndviSeries, config, phase) {
+function healthyThresholdForStage(accumulatedGDD, config) {
+  var stages = config.growth_stages;
+  var fullThreshold = config.watch_threshold;
+  if (accumulatedGDD >= stages.VT) {
+    return fullThreshold;
+  }
+  var progress = accumulatedGDD / stages.VT;
+  return fullThreshold * Math.max(progress, 0.3);
+}
+
+function classifyRisk(ndviSeries, config, phase, accumulatedGDD) {
   if (!ndviSeries || !ndviSeries.length) return 'unknown';
   phase = phase || 'building';
+  accumulatedGDD = accumulatedGDD || 0;
 
   // Phases where NDVI number is not diagnostic
   if (phase === 'establishing' || phase === 'reproductive_late') return 'healthy';
@@ -1014,7 +1035,8 @@ function classifyRisk(ndviSeries, config, phase) {
 
   // Absolute NDVI floor — active in building and reproductive_early
   if (latest < config.stress_threshold) return 'critical';
-  if (latest < config.watch_threshold)  return 'watch';
+  var healthyThreshold = healthyThresholdForStage(accumulatedGDD, config);
+  if (latest < healthyThreshold)  return 'watch';
 
   // Decline-based promotions — building phase only
   if (phase === 'building' && ndviSeries.length >= 3) {
@@ -1160,7 +1182,7 @@ const state = {
     return ff.map(function(f) {
       var ndviSeries = self.getFilteredNDVISeries(f);
       var weatherData = self.getFilteredWeather(f);
-      var risk = classifyRisk(ndviSeries, CONFIG, phaseInfo.phase);
+      var risk = classifyRisk(ndviSeries, CONFIG, phaseInfo.phase, phaseInfo.cumGDD);
       var trend = computeNDVITrend(ndviSeries, phaseInfo.phase);
       var lastNDVI = ndviSeries.length ? ndviSeries[ndviSeries.length - 1].value : null;
       var weatherSumm = computeWeatherSummaries(weatherData, CONFIG);
@@ -1365,7 +1387,7 @@ function renderNDVITimeSeries() {
     chartTitle = 'NDVI &middot; Emergence Phase (pre-canopy, flagging suppressed)' + ndviLegendSpan;
   } else if (currentPhase === 'building') {
     var decliningCount = ff.filter(function(f) { return f.ndvi_trend === 'declining'; }).length;
-    chartTitle = 'NDVI Declining in ' + decliningCount + ' Fields' + ndviLegendSpan;
+    chartTitle = 'NDVI Declining in ' + decliningCount + ' ' + (decliningCount === 1 ? 'Field' : 'Fields') + ndviLegendSpan;
   } else if (currentPhase === 'reproductive_early') {
     var belowFloor = ff.filter(function(f) { return f.current_risk === 'critical' || f.current_risk === 'watch'; }).length;
     chartTitle = 'NDVI &middot; Early Grain Fill (' + (stageLabel || 'R1\u2013R4') + ') &middot; ' + belowFloor + ' field' + (belowFloor !== 1 ? 's' : '') + ' below threshold' + ndviLegendSpan;
@@ -1841,10 +1863,25 @@ function renderMap() {
 
   // Render labels with collision offsets
   labelData.forEach(function(ld) {
+    var labelY = ld.cy + (ld.oy || 0);
+    if (ld.oy && ld.oy !== 0) {
+      mapGroup.append("line")
+        .attr("x1", ld.cx).attr("y1", ld.cy)
+        .attr("x2", ld.cx).attr("y2", labelY - 4)
+        .attr("stroke", "#999").attr("stroke-width", 1).attr("stroke-dasharray", "2,2");
+    }
+    // Anchor flip: if label would extend past SVG edge, render inward instead
+    var halfW = labelWidth(ld) / 2;
+    var anchor = "middle";
+    if (ld.cx - halfW < 0) {
+      anchor = "start";
+    } else if (ld.cx + halfW > width) {
+      anchor = "end";
+    }
     mapGroup.append("text")
       .attr("x", ld.cx)
-      .attr("y", ld.cy + (ld.oy || 0))
-      .attr("text-anchor", "middle")
+      .attr("y", labelY)
+      .attr("text-anchor", anchor)
       .attr("dy", "0.35em")
       .attr("font-size", "10px")
       .attr("font-weight", "600")
@@ -2219,14 +2256,29 @@ function renderNarrative() {
   if (improving > 0) html += ' ' + improving + ' field(s) are improving.';
   html += ' ' + healthy + ' field(s) appear healthy and stable.</p>';
 
-  html += '<p><strong>Field Health.</strong> Critical-risk fields typically combine below-threshold NDVI with declining trend. ';
-  if (lowAWC > 0) {
-    html += '' + lowAWC + ' field(s) have low available water storage (AWS < 1.0 in), which likely contributes to stress under dry conditions.';
+  if (crit > 0) {
+    html += '<p><strong>Field Health.</strong> Critical-risk fields typically combine below-threshold NDVI with declining trend. ';
+    if (lowAWC > 0) {
+      html += '' + lowAWC + ' field(s) have low available water storage (AWS < 1.0 in), which likely contributes to stress under dry conditions.';
+    } else {
+      html += 'Soil AWS across fields is adequate for current conditions.';
+    }
+    if (highOM > 0) html += ' ' + highOM + ' field(s) have elevated organic matter (>3%), supporting better moisture retention.';
+    html += '</p>';
+  } else if (watch > 0) {
+    html += '<p><strong>Field Health.</strong> No fields are currently in Critical status. ' + watch + ' field(s) are in Watch and warrant continued monitoring, particularly those with low available water storage.';
+    if (lowAWC > 0) {
+      html += ' ' + lowAWC + ' field(s) have low available water storage (AWS < 1.0 in).';
+    } else {
+      html += ' Soil AWS across fields is adequate for current conditions.';
+    }
+    if (highOM > 0) html += ' ' + highOM + ' field(s) have elevated organic matter (>3%), supporting better moisture retention.';
+    html += '</p>';
   } else {
-    html += 'Soil AWS across fields is adequate for current conditions.';
+    html += '<p><strong>Field Health.</strong> All ' + total + ' fields are Healthy. No fields require immediate attention based on NDVI thresholds.';
+    if (lowAWC > 0) html += ' ' + lowAWC + ' field(s) have low available water storage (AWS < 1.0 in), which may warrant attention under dry conditions.';
+    html += '</p>';
   }
-  if (highOM > 0) html += ' ' + highOM + ' field(s) have elevated organic matter (>3%), supporting better moisture retention.';
-  html += '</p>';
 
   html += '<p><strong>Environmental & Soil Variation.</strong> Fields range from ' +
     (awcVals.length ? d3.min(awcVals).toFixed(2) : '--') + ' to ' + (awcVals.length ? d3.max(awcVals).toFixed(2) : '--') +
@@ -2235,7 +2287,11 @@ function renderNarrative() {
     '% organic matter. This variation directly correlates with NDVI differences -- the scatter plot of NDVI vs. AWS shows ' +
     (scatterCount > 3 ? 'a visible positive relationship' : 'limited correlation given available datapoints') + '.</p>';
 
-  html += '<p><strong>Decisions & Actions.</strong> Focus scouting on critical-risk fields first. ';
+  if (crit > 0) {
+    html += '<p><strong>Decisions & Actions.</strong> Focus scouting on critical-risk fields first. ';
+  } else {
+    html += '<p><strong>Decisions & Actions.</strong> No fields require immediate intervention. Continue routine monitoring of Watch-tier fields, particularly for soil moisture and NDVI trend. ';
+  }
   if (gddDiff < -100) {
     html += 'GDD accumulation (' + gdd + ' &deg;F-days) is below normal (' + normal + ' &deg;F-days), which may delay maturity.';
   } else if (gddDiff > 200) {
@@ -2245,7 +2301,11 @@ function renderNarrative() {
   }
   html += ' The priority action list above ranks fields by risk severity for operational triage.</p>';
 
-  html += '<p><strong>Key Variables.</strong> NDVI trend direction, soil AWC, and GDD accumulation are the three most important indicators in this analysis. Fields with low AWC and declining NDVI consistently appear in the critical tier and should be prioritized for irrigation and stand assessment.</p>';
+  if (crit > 0) {
+    html += '<p><strong>Key Variables.</strong> NDVI trend direction, soil AWC, and GDD accumulation are the three most important indicators in this analysis. Fields with low AWC and declining NDVI consistently appear in the critical tier and should be prioritized for irrigation and stand assessment.</p>';
+  } else {
+    html += '<p><strong>Key Variables.</strong> NDVI trend direction, soil AWC, and GDD accumulation are the three most important indicators in this analysis. Fields with low AWC are the most drought-sensitive and warrant monitoring as dry conditions continue.</p>';
+  }
 
   d3.select("#narrative-text").html(html);
 }
@@ -2262,7 +2322,7 @@ function renderFooter() {
 // ===== HEADER LEGEND =====
 function renderHeaderLegend() {
   var tiers = [
-    { key: "healthy", desc: "NDVI &ge; " + CONFIG.watch_threshold },
+    { key: "healthy", desc: "NDVI &ge; " + CONFIG.watch_threshold + " (scaled by growth stage before VT)" },
     { key: "watch",   desc: "NDVI " + CONFIG.stress_threshold + "&ndash;" + CONFIG.watch_threshold + " (all phases) or declining &gt;" + CONFIG.ndvi_decline_warning_pct + "% (vegetative only)" },
     { key: "critical",desc: "NDVI &lt; " + CONFIG.stress_threshold + " (all phases) or declining &gt;" + CONFIG.ndvi_decline_critical_pct + "% (vegetative only)" }
   ];
@@ -2272,7 +2332,7 @@ function renderHeaderLegend() {
     html += '<div class="legend-item"><span class="legend-swatch" style="background:' + tl.color + '"></span>' + tl.label + ' (' + t.desc + ')</div>';
   });
   // Growth-phase gating note
-  html += '<div class="legend-item" style="margin-top:6px; font-size:0.78rem; color:#666;">' +
+  html += '<div style="margin-top:8px; font-size:0.78rem; color:#c8d8e8; line-height:1.4;">' +
     '<em>Flagging suppressed during establishment (pre-VE) and late reproductive (R4+) phases &mdash; ' +
     'NDVI is non-diagnostic in those windows. Decline flags also suppressed R1&ndash;R4 (natural ' +
     'senescence onset); absolute floors remain active through R4.</em>' +
