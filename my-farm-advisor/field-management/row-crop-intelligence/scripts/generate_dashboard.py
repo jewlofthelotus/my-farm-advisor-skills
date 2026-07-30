@@ -3,20 +3,16 @@
 
 import argparse
 import csv
-import gzip
-import io
 import json
 import os
 import sys
 import urllib.request
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import rasterio
-from rasterio.windows import Window
-from shapely.geometry import shape
 
 # ---------------------------------------------------------------------------
 # Crop-type configuration  (grape-ready: add a "grape" key later)

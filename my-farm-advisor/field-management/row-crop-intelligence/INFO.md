@@ -25,20 +25,20 @@ The runtime data for `il-grower` (Iroquois County, Illinois) contains:
 
 ### Fields (10 total)
 
-| Field ID | Area (ac) | Sample Crop (2024) |
-|---|---|---|
-| osm-1253853022 | 17.1 | Corn |
-| osm-1254255035 | 16.1 | Soybeans |
-| osm-1280521064 | 0.9 | Meadow |
-| osm-1288035236 | 3.2 | Meadow |
-| osm-1293013560 | 13.4 | Farmland |
-| osm-1293013562 | 4.0 | Farmland |
-| osm-1296444203 | 7.7 | Farmland |
-| osm-1499317763 | 259.5 | Farmland |
-| osm-1525396389 | 50.6 | Farmland |
-| osm-889020586 | 238.5 | Farmland |
+| Dashboard | Field ID | Area (ac) | Crop (2025) |
+|---|---|---|---|
+| Field 1 | osm-1253853022 | 17.1 | Soybeans |
+| Field 2 | osm-1254255035 | 16.1 | Corn |
+| Field 3 | osm-1280521064 | 0.9 | Grass/Pasture |
+| Field 4 | osm-1288035236 | 3.2 | Grass/Pasture |
+| Field 5 | osm-1293013560 | 13.4 | Corn |
+| Field 6 | osm-1293013562 | 4.0 | Corn |
+| Field 7 | osm-1296444203 | 7.7 | Grass/Pasture |
+| Field 8 | osm-1499317763 | 259.5 | Corn |
+| Field 9 | osm-1525396389 | 50.6 | Soybeans |
+| Field 10 | osm-889020586 | 238.5 | Soybeans |
 
-Crop identity rotates year to year for most fields — see Crop Rotation below. Which fields display as corn (and are included in the dashboard) therefore changes depending on the selected year.
+Crop identity rotates year to year for most fields — see Crop Rotation below. Which fields display as corn (and are included in the dashboard) therefore changes depending on the selected year. The 2025 sample above is the most recent complete year of USDA CDL data. For the current year (2026), the dashboard uses the **predicted next crop** from the rotation analysis rather than CDL (which is not yet published as of mid-2026).
 
 ### NDVI Data
 
@@ -51,7 +51,7 @@ Crop identity rotates year to year for most fields — see Crop Rotation below. 
 ### Soil Data
 
 - **Source:** NRCS SSURGO database
-- **Metrics per field:** AWS (available water storage, total inches across the profile — not a per-inch ratio), organic matter % (1.1–7.5%), pH (6.6–7.3), CEC, sand/silt/clay fractions, drainage class, erosion risk
+- **Metrics per field:** AWS (available water storage, total inches across the profile — not a per-inch ratio), organic matter % (1.1–3.7%), pH (5.2–6.9), CEC, sand/silt/clay fractions, drainage class, erosion risk
 - **Structure:** Horizon-level component data aggregated to field-level summary
 - **Static across years:** soil properties are read from a shared, read-only per-field object and do not vary by selected year.
 
@@ -59,13 +59,14 @@ Crop identity rotates year to year for most fields — see Crop Rotation below. 
 
 - **Source:** NASA POWER (daily, 2021–2026)
 - **Variables:** T2M_MIN / T2M_MAX (°C), PRECTOTCORR (mm/day), solar radiation, humidity, wind speed
-- **Coverage:** ~1,826 daily records per field
+- **Coverage:** ~2,190 daily records per field
 - **Known limitation:** NASA POWER's most recent ~1–2 months of data are frequently unavailable (a real-time publication lag, not a pipeline bug). The dashboard handles this explicitly: GDD/rain calculations skip missing days rather than propagating invalid values, and a shaded "Weather gap" region marks affected chart ranges so the limitation is visible rather than hidden.
 
 ### Crop Rotation
 
-- Corn-soybean 2-year rotation pattern
-- Pre-computed rotation sequences with next-crop predictions
+- Corn-soybean 2-year rotation pattern across the corn/soybean fields; Grass/Pasture and Winter Wheat fields are stable
+- Pre-computed rotation sequences with `predicted_next_crop` and `predicted_following_crop`
+- **Current-year crops in the dashboard** — because USDA CDL data for the current season is not yet published at generation time, the dashboard uses `predicted_next_crop` from the rotation table as the crop type for the current (incomplete) year. Past-year selections use actual CDL classifications.
 
 ## Dashboard Explanation
 

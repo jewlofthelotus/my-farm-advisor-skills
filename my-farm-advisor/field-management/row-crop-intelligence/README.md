@@ -8,7 +8,7 @@ Build a single-page, offline-functional operational dashboard for corn fields at
 
 ### Prerequisites
 
-- Python 3.10+ with `pandas`, `numpy`, `rasterio`, `geopandas` installed
+- Python 3.10+ with `pandas`, `numpy`, `rasterio` installed
 - The runtime data pipeline installed and seeded (see `../data-pipeline/`)
 - `DATA_PIPELINE_DATA_ROOT` environment variable pointing to the runtime root
 
@@ -21,10 +21,11 @@ source /home/coder/my-farm-advisor-runtime/data-pipeline/.venv/bin/activate
 # Run the generator for il-grower
 python my-farm-advisor/field-management/row-crop-intelligence/scripts/generate_dashboard.py --grower il-grower
 
-# Or specify a custom data root
+# Or specify a custom data root and/or output path
 python my-farm-advisor/field-management/row-crop-intelligence/scripts/generate_dashboard.py \
   --grower il-grower \
-  --data-root /path/to/runtime
+  --data-root /path/to/runtime \
+  --output /path/to/output.html
 ```
 
 ### Output
@@ -66,7 +67,6 @@ The dashboard defaults to the current growing season (actionable mode: Priority 
 | `pandas` | CSV/JSON data assembly |
 | `numpy` | NDVI statistics, GDD calculation |
 | `rasterio` | Read NDVI GeoTIFF scene files |
-| `geopandas` | GeoJSON geometry handling |
 | `json` (stdlib) | Data serialization |
 | `csv` (stdlib) | Weather/soil CSV parsing |
 | `datetime` (stdlib) | Date handling |
