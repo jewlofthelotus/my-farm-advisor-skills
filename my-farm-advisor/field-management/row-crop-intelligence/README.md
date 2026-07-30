@@ -19,10 +19,10 @@ Build a single-page, offline-functional operational dashboard for corn fields at
 source /home/coder/my-farm-advisor-runtime/data-pipeline/.venv/bin/activate
 
 # Run the generator for il-grower
-python my-farm-advisor/row-crop-intelligence/scripts/generate_dashboard.py --grower il-grower
+python my-farm-advisor/field-management/row-crop-intelligence/scripts/generate_dashboard.py --grower il-grower
 
 # Or specify a custom data root
-python my-farm-advisor/row-crop-intelligence/scripts/generate_dashboard.py \
+python my-farm-advisor/field-management/row-crop-intelligence/scripts/generate_dashboard.py \
   --grower il-grower \
   --data-root /path/to/runtime
 ```

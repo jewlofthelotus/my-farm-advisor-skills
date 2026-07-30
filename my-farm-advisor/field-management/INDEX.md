@@ -6,3 +6,4 @@ Use this area for field geometry, deterministic sampling, and headland workflows
 - [CSB Field Sampling Guide](csb-field-sampling/GUIDE.md) - sample field boundaries from USDA CSB
 - [Headlands Ring Guide](headlands-ring/GUIDE.md) - derive reusable headlands and interior geometries
 - [Field-Year Dashboard Guide](field-year-dashboard/GUIDE.md) - single-field yearly dashboard with NDVI, weather, and GDD panels
+- [Row Crop Intelligence](row-crop-intelligence/INDEX.md) - grower-level operational dashboard with multi-field NDVI, soil, weather, and risk analysis

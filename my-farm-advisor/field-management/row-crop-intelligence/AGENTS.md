@@ -6,7 +6,7 @@ This folder owns the Row Crop Intelligence & Data Dashboard workflow — generat
 
 ## Safe edit scope
 
-Edits should stay in `my-farm-advisor/row-crop-intelligence/` unless the user explicitly asks for broader farm-advisor work. Do not modify sibling subskill trees from a dashboard task.
+Edits should stay in `my-farm-advisor/field-management/row-crop-intelligence/` unless the user explicitly asks for broader farm-advisor work. Do not modify sibling subskill trees from a dashboard task.
 
 ## Read nearby docs first
 
@@ -27,7 +27,7 @@ Edits should stay in `my-farm-advisor/row-crop-intelligence/` unless the user ex
 Run the generator after code changes:
 
 ```bash
-python my-farm-advisor/row-crop-intelligence/scripts/generate_dashboard.py --grower il-grower
+python my-farm-advisor/field-management/row-crop-intelligence/scripts/generate_dashboard.py --grower il-grower
 ```
 
 Verify the output file exists in the runtime tree and open it in a browser. Also run `./scripts/validate.sh` from the repo root after structural changes.
