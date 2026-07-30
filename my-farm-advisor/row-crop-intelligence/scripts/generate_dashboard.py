@@ -178,10 +178,11 @@ def compute_scene_ndvi_time_series(field_dir, data_root):
     series.sort(key=lambda x: x["date"])
     return series
 
-def compute_gdd(tmin_c, tmax_c, base_c=10.0):
-    """Growing degree days in Celsius, converted to Fahrenheit scale if needed."""
+def compute_gdd(tmin_c, tmax_c):
+    """Growing degree days in Fahrenheit (base 50°F)."""
     avg_c = (tmin_c + tmax_c) / 2.0
-    return max(0.0, avg_c - base_c)
+    avg_f = avg_c * 9 / 5 + 32
+    return max(0.0, avg_f - 50.0)
 
 def compute_weather_summaries(weather_records):
     if not weather_records:
@@ -817,7 +818,7 @@ svg.icon-lg { width: 24px; height: 24px; }
         </div>
         <div class="sources-column">
           <h4>Sources</h4>
-          <div><span class="method-label">NDVI:</span> mean per-scene from Sentinel-2/Landsat 8-9</div>
+          <div><span class="method-label">NDVI:</span> mean per-scene from Sentinel-2/Landsat 8-9 &middot; dashed lines indicate &ge;30-day scene gap</div>
           <div><span class="method-label">GDD:</span> base 50&deg;F from daily Tmin/Tmax</div>
           <div><span class="method-label">Soil:</span> NRCS SSURGO (AWS, OM%)</div>
           <div><span class="method-label">Weather:</span> NASA POWER daily</div>
@@ -853,18 +854,18 @@ svg.icon-lg { width: 24px; height: 24px; }
 
   <div class="chart-grid">
     <div class="chart-card">
-      <h3>Field Ranking by Current NDVI</h3>
+      <h3 id="field-ranking-title">Field Ranking by Current NDVI</h3>
       <div class="chart-container" id="field-ranking"></div>
     </div>
     <div class="chart-card">
-      <h3>NDVI vs. Available Water Storage</h3>
+      <h3 id="scatter-title">NDVI vs. Available Water Storage</h3>
       <div class="chart-container" id="ndvi-vs-awc"></div>
     </div>
   </div>
 
   <div class="chart-grid">
     <div class="chart-card">
-      <h3>GDD Accumulation: Actual vs. Normal</h3>
+      <h3>GDD Accumulation: Actual vs. Normal<span class="map-legend" id="gdd-legend"></span></h3>
       <div class="chart-container" id="gdd-chart"></div>
     </div>
     <div class="chart-card">
@@ -1096,7 +1097,7 @@ function computeWeatherSummaries(weatherRecords, config) {
   for (var i = 0; i < weatherRecords.dates.length; i++) {
     var tmax = +weatherRecords.T2M_MAX[i], tmin = +weatherRecords.T2M_MIN[i];
     if (tmax != null && tmin != null && !isNaN(tmax) && !isNaN(tmin)) {
-      gddTotal += Math.max(0, (tmax + tmin) / 2 - 10);
+      gddTotal += Math.max(0, ((tmax + tmin) / 2 * 9 / 5 + 32) - (config.gdd_base_temp_f || 50));
     }
     var p = +weatherRecords.PRECTOTCORR[i];
     if (!isNaN(p)) {
@@ -1131,6 +1132,186 @@ function computeStressDuration(ndviSeries, config) {
     total += Math.round((new Date(last) - new Date(start)) / 86400000);
   }
   return total;
+}
+
+function computeDateStageMap(weatherData, config) {
+  if (!weatherData || !weatherData.dates || !weatherData.dates.length) return null;
+  var stages = config.growth_stages || {};
+  var gddBaseF = config.gdd_base_temp_f || 50.0;
+  var orderedStages = [
+    ['VE', stages.VE || 120],  ['V6', stages.V6 || 500],
+    ['VT', stages.VT || 1130], ['R1', stages.R1 || 1400],
+    ['R2', stages.R2 || 1650], ['R3', stages.R3 || 1880],
+    ['R4', stages.R4 || 2150], ['R5', stages.R5 || 2450],
+    ['R6', stages.R6 || 2700],
+  ];
+  var stageDescMap = {
+    VE: 'Early Vegetative', V6: 'Vegetative', VT: 'Tasseling',
+    R1: 'Silking', R2: 'Blister', R3: 'Milk',
+    R4: 'Dough',  R5: 'Dent',    R6: 'Maturing',
+  };
+  var frostThresholdC = 0.0;
+  var defaultPlanting = new Date(weatherData.dates[0].slice(0, 4) + '-04-20');
+  var lastFrostDate = null;
+  for (var i = 0; i < weatherData.dates.length; i++) {
+    var tminVal = +weatherData.T2M_MIN[i];
+    if (!isNaN(tminVal) && tminVal <= frostThresholdC) {
+      var dObj = new Date(weatherData.dates[i]);
+      var doy = Math.floor((dObj - new Date(dObj.getFullYear(), 0, 0)) / 86400000);
+      if (doy <= 182) {
+        if (!lastFrostDate || dObj > lastFrostDate) lastFrostDate = dObj;
+      }
+    }
+  }
+  var plantingDate = (lastFrostDate && lastFrostDate > defaultPlanting) ? lastFrostDate : defaultPlanting;
+
+  var dateStageMap = [];
+  var cumGDD = 0;
+  for (var j = 0; j < weatherData.dates.length; j++) {
+    var dj = new Date(weatherData.dates[j]);
+    if (dj < plantingDate) continue;
+    var tmx = +weatherData.T2M_MAX[j], tmn = +weatherData.T2M_MIN[j];
+    if (!isNaN(tmx) && !isNaN(tmn)) {
+      var avgF = (tmn + tmx) / 2 * 9 / 5 + 32;
+      cumGDD += Math.max(0, avgF - gddBaseF);
+    }
+    cumGDD = Math.round(cumGDD * 10) / 10;
+
+    var stageLabel = 'Pre-VE', stageDescription = 'Emergence';
+    for (var k = 0; k < orderedStages.length; k++) {
+      if (cumGDD < orderedStages[k][1]) {
+        if (k > 0) {
+          stageLabel = orderedStages[k - 1][0] + '-' + orderedStages[k][0];
+          stageDescription = stageDescMap[orderedStages[k - 1][0]] || orderedStages[k - 1][0];
+        }
+        break;
+      }
+      if (k === orderedStages.length - 1) {
+        stageLabel = 'R6+';
+        stageDescription = 'Maturing';
+      }
+    }
+    dateStageMap.push({ date: weatherData.dates[j], stageLabel: stageLabel, stageDescription: stageDescription });
+  }
+  return { dateStageMap: dateStageMap, plantingDate: plantingDate };
+}
+
+function countConsecutiveDryDays(weatherData, startDate, endDate, thresholdMm) {
+  if (!weatherData || !weatherData.dates) return 0;
+  var start = new Date(startDate), end = new Date(endDate);
+  var maxDry = 0, curDry = 0;
+  for (var i = 0; i < weatherData.dates.length; i++) {
+    var d = new Date(weatherData.dates[i]);
+    if (d >= start && d <= end) {
+      var p = +weatherData.PRECTOTCORR[i];
+      if (isNaN(p) || p < thresholdMm) {
+        curDry++;
+        if (curDry > maxDry) maxDry = curDry;
+      } else {
+        curDry = 0;
+      }
+    }
+  }
+  return maxDry;
+}
+
+function hasTemperatureExtreme(weatherData, startDate, endDate) {
+  if (!weatherData || !weatherData.dates) return false;
+  var start = new Date(startDate), end = new Date(endDate);
+  for (var i = 0; i < weatherData.dates.length; i++) {
+    var d = new Date(weatherData.dates[i]);
+    if (d >= start && d <= end) {
+      var tmax = +weatherData.T2M_MAX[i];
+      var tmin = +weatherData.T2M_MIN[i];
+      if ((!isNaN(tmax) && tmax > 35) || (!isNaN(tmin) && tmin < 0)) return true;
+    }
+  }
+  return false;
+}
+
+function getStageLabelForDates(dateStageMap, startDate, endDate) {
+  if (!dateStageMap) return null;
+  var start = new Date(startDate), end = new Date(endDate);
+  var seen = [];
+  for (var i = 0; i < dateStageMap.length; i++) {
+    var d = new Date(dateStageMap[i].date);
+    if (d >= start && d <= end) {
+      if (seen.indexOf(dateStageMap[i].stageLabel) === -1) {
+        seen.push(dateStageMap[i].stageLabel);
+      }
+    }
+  }
+  if (seen.length === 0) return null;
+  if (seen.length === 1) return seen[0];
+  return seen[0] + '\u2013' + seen[seen.length - 1];
+}
+
+function formatDateShort(dateStr) {
+  var d = new Date(dateStr);
+  return d.toLocaleString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function detectNotableEvent(ndviSeries, weatherData, config, dateStageMap) {
+  if (!ndviSeries || ndviSeries.length < 3 || !weatherData) return null;
+  var significantMm = config.precip_significant_mm || 2.54;
+  var stages = config.growth_stages || {};
+  var vtR2StartGDD = stages.VT || 1130;
+  var vtR2EndGDD = stages.R2 || 1650;
+
+  var stageMapEntry = null;
+  if (!dateStageMap) {
+    var result = computeDateStageMap(weatherData, config);
+    if (result) stageMapEntry = result.dateStageMap;
+  } else {
+    stageMapEntry = dateStageMap;
+  }
+
+  for (var i = 1; i < ndviSeries.length; i++) {
+    var drop = ndviSeries[i - 1].value - ndviSeries[i].value;
+    if (drop > 0.15) {
+      var dropStart = ndviSeries[i - 1].date;
+      var dropEnd = ndviSeries[i].date;
+      var dryDays = countConsecutiveDryDays(weatherData, dropStart, dropEnd, significantMm);
+
+      // Stage-sensitive threshold: VT-R2 is the most drought-sensitive window
+      var useThreshold = 14;
+      if (stageMapEntry) {
+        var stageLabel = getStageLabelForDates(stageMapEntry, dropStart, dropEnd);
+        if (stageLabel && (stageLabel.indexOf('VT') !== -1 || stageLabel.indexOf('R1') !== -1 || stageLabel.indexOf('R2') !== -1)) {
+          useThreshold = 10;
+        }
+      }
+
+      if (dryDays >= useThreshold) {
+        var stageText = '';
+        if (stageMapEntry) {
+          var sl = getStageLabelForDates(stageMapEntry, dropStart, dropEnd);
+          if (sl) {
+            var stageDescMap = { 'Early Vegetative': 'emergence', 'Vegetative': 'vegetative growth', 'Tasseling': 'tasseling', 'Silking': 'pollination', 'Blister': 'grain fill', 'Milk': 'grain fill', 'Dough': 'grain fill', 'Dent': 'grain fill', 'Maturing': 'maturation' };
+            for (var si = 0; si < stageMapEntry.length; si++) {
+              if (stageMapEntry[si].stageLabel === sl) {
+                stageText = ' during ' + sl + ' (' + (stageDescMap[stageMapEntry[si].stageDescription] || stageMapEntry[si].stageDescription.toLowerCase()) + ')';
+                break;
+              }
+            }
+          }
+        }
+        return 'Sharp NDVI drop ' + formatDateShort(dropStart) + '\u2013' + formatDateShort(dropEnd) + ', coinciding with a ' + dryDays + '-day dry spell' + stageText + '.';
+      }
+
+      if (hasTemperatureExtreme(weatherData, dropStart, dropEnd)) {
+        var stageText2 = '';
+        if (stageMapEntry) {
+          var sl2 = getStageLabelForDates(stageMapEntry, dropStart, dropEnd);
+          if (sl2) {
+            stageText2 = ' during ' + sl2;
+          }
+        }
+        return 'Sharp NDVI drop ' + formatDateShort(dropStart) + '\u2013' + formatDateShort(dropEnd) + ', coinciding with a temperature extreme' + stageText2 + '.';
+      }
+    }
+  }
+  return null;
 }
 
 // ===== STATE (pub/sub) =====
@@ -1191,9 +1372,11 @@ const state = {
       var risk = classifyRisk(ndviSeries, CONFIG, phaseInfo.phase, phaseInfo.cumGDD);
       var trend = computeNDVITrend(ndviSeries, phaseInfo.phase);
       var lastNDVI = ndviSeries.length ? ndviSeries[ndviSeries.length - 1].value : null;
+      var peakNDVI = ndviSeries.length ? d3.max(ndviSeries, function(d) { return d.value; }) : null;
       var weatherSumm = computeWeatherSummaries(weatherData, CONFIG);
       return Object.assign({}, f, {
         current_ndvi: lastNDVI,
+        display_ndvi: year === String(new Date().getFullYear()) ? lastNDVI : peakNDVI,
         current_risk: risk,
         ndvi_trend: trend.trend,
         ndvi_trend_pct: trend.pct,
@@ -1358,6 +1541,11 @@ function renderKPIs() {
     const avgStress = stressVals.length ? Math.round(stressVals.reduce(function(a,b) { return a+b; }, 0) / stressVals.length) : 0;
 
     d3.select("#kpi-row").html(
+      '<div class="kpi-card headline ' + (avgStress > 14 ? 'watch' : 'healthy') + '">' +
+        '<div class="kpi-label">' + ICONS.warning + ' Season Stress Duration (avg)</div>' +
+        '<div class="kpi-value">' + avgStress + ' <span class="kpi-unit">days</span></div>' +
+        '<div class="kpi-trend">Avg days in Watch/Critical</div>' +
+      '</div>' +
       '<div class="kpi-card healthy">' +
         '<div class="kpi-label">' + ICONS.plant + ' Peak NDVI (avg)</div>' +
         '<div class="kpi-value">' + avgPeak + ' <span class="kpi-unit"></span></div>' +
@@ -1368,11 +1556,6 @@ function renderKPIs() {
         '<div class="kpi-label">' + ICONS.water + ' Cumulative Rain (avg)</div>' +
         '<div class="kpi-value">' + avgPrecipIn + ' <span class="kpi-unit">in</span></div>' +
         '<div class="kpi-trend">Total for ' + state.filters.selectedYear + '</div>' +
-      '</div>' +
-      '<div class="kpi-card ' + (avgStress > 14 ? 'watch' : 'healthy') + '">' +
-        '<div class="kpi-label">' + ICONS.warning + ' Season Stress Duration</div>' +
-        '<div class="kpi-value">' + avgStress + ' <span class="kpi-unit">days</span></div>' +
-        '<div class="kpi-trend">Avg days in Watch/Critical</div>' +
       '</div>'
     );
   }
@@ -1389,7 +1572,10 @@ function renderNDVITimeSeries() {
   var stageLabel   = ff.length ? (ff[0].current_stage_label || '') : '';
   var ndviLegendSpan = '<span class="map-legend" id="ndvi-legend"></span>';
   var chartTitle;
-  if (currentPhase === 'establishing') {
+  var isCurrent = state.filters.selectedYear === String(new Date().getFullYear());
+  if (!isCurrent) {
+    chartTitle = 'NDVI Trajectory \u2014 ' + state.filters.selectedYear + ' Season' + ndviLegendSpan;
+  } else if (currentPhase === 'establishing') {
     chartTitle = 'NDVI &middot; Emergence Phase (pre-canopy, flagging suppressed)' + ndviLegendSpan;
   } else if (currentPhase === 'building') {
     var decliningCount = ff.filter(function(f) { return f.ndvi_trend === 'declining'; }).length;
@@ -1559,20 +1745,38 @@ function renderNDVITimeSeries() {
     .text("NDVI");
 
   const line = d3.line()
-    .x(d => xScale(new Date(d.date)))
-    .y(d => yScale(d.value))
+    .x(function(d) { return d ? xScale(new Date(d.date)) : null; })
+    .y(function(d) { return d ? yScale(d.value) : null; })
+    .defined(function(d) { return d != null; })
     .curve(d3.curveLinear);
+
+  var GAP_THRESHOLD_DAYS = 30;
 
   ff.forEach(function(f, i) {
     const series = f.ndvi_series;
     if (series.length < 2) return;
+
+    // Split series into solid segments separated by nulls at large gaps
+    var solidData = [];
+    var gapSegments = [];
+    for (var pi = 0; pi < series.length; pi++) {
+      solidData.push(series[pi]);
+      if (pi < series.length - 1) {
+        var gap = (new Date(series[pi + 1].date) - new Date(series[pi].date)) / 86400000;
+        if (gap >= GAP_THRESHOLD_DAYS) {
+          gapSegments.push({ a: series[pi], b: series[pi + 1] });
+          solidData.push(null);
+        }
+      }
+    }
+
     const last = series[series.length - 1];
     const trendInfo = computeNDVITrend(series);
     const latestNDVI = last.value.toFixed(3);
     const ndviTip = "<strong>" + f.name + "</strong><br>Latest NDVI: " + latestNDVI + " on " + last.date + "<br>Trend: " + trendInfo.trend + " (" + (trendInfo.pct >= 0 ? '+' : '') + trendInfo.pct + ")";
 
     svg.append("path")
-      .datum(series)
+      .datum(solidData)
       .attr("data-field-id", f.id)
       .attr("data-default-sw", 2)
       .attr("data-default-op", 0.8)
@@ -1591,6 +1795,19 @@ function renderNDVITimeSeries() {
         d3.select(this).attr("stroke-width", 4).attr("opacity", 1);
         showTooltip(ndviTip, event.pageX, event.pageY);
       });
+
+    // Dotted segments for large gaps
+    gapSegments.forEach(function(seg) {
+      svg.append("line")
+        .attr("x1", xScale(new Date(seg.a.date)))
+        .attr("y1", yScale(seg.a.value))
+        .attr("x2", xScale(new Date(seg.b.date)))
+        .attr("y2", yScale(seg.b.value))
+        .attr("stroke", colorScale(f.id))
+        .attr("stroke-width", 2)
+        .attr("stroke-dasharray", "4,4")
+        .attr("opacity", 0.5);
+    });
 
     // HTML legend (like map legend)
     if (i === 0) {
@@ -1624,6 +1841,12 @@ function renderNDVITimeSeries() {
         })(fi.id, fi.ndvi_series);
         legendEl.appendChild(item);
       });
+      // Gap annotation
+      var gapItem = document.createElement("span");
+      gapItem.className = "legend-item";
+      gapItem.style.marginTop = "6px";
+      gapItem.innerHTML = '<span class="legend-swatch" style="background:transparent; border-top:2px dashed #999; width:14px; height:0;"></span> \u226530-day data gap';
+      legendEl.appendChild(gapItem);
     }
   });
 }
@@ -1632,7 +1855,20 @@ function renderNDVITimeSeries() {
 function renderFieldRanking() {
   const container = d3.select("#field-ranking");
   container.html("");
-  let ff = state.getFilteredFields().filter(f => f.current_ndvi != null).sort((a, b) => a.current_ndvi - b.current_ndvi);
+  var isCurrent = state.filters.selectedYear === String(new Date().getFullYear());
+  d3.select("#field-ranking-title").text(isCurrent ? 'Field Ranking by Current NDVI' : 'Field Ranking by Peak NDVI');
+  let ff = state.getFilteredFields();
+  if (isCurrent) {
+    ff = ff.filter(f => f.current_ndvi != null).sort((a, b) => a.current_ndvi - b.current_ndvi);
+  } else {
+    ff = ff.filter(f => f.ndvi_series && f.ndvi_series.length)
+      .map(function(f) {
+        var peak = d3.max(f.ndvi_series, function(d) { return d.value; });
+        return Object.assign({}, f, { peak_ndvi: peak });
+      })
+      .filter(function(f) { return f.peak_ndvi != null; })
+      .sort((a, b) => b.peak_ndvi - a.peak_ndvi);
+  }
   if (!ff.length) return;
 
   const rect = container.node().getBoundingClientRect();
@@ -1654,12 +1890,13 @@ function renderFieldRanking() {
     .call(d3.axisBottom(xScale).ticks(5));
 
   ff.forEach(f => {
+    var ndviVal = isCurrent ? f.current_ndvi : f.peak_ndvi;
     const color = THRESHOLD_LABELS[f.current_risk]?.color || "#999";
-    const barTip = "<strong>" + f.name + "</strong><br>NDVI: " + f.current_ndvi.toFixed(3) + "<br>Risk: " + f.current_risk;
+    const barTip = "<strong>" + f.name + "</strong><br>NDVI: " + ndviVal.toFixed(3) + "<br>Risk: " + f.current_risk;
     svg.append("rect")
       .attr("x", 0)
       .attr("y", yScale(f.name))
-      .attr("width", xScale(f.current_ndvi))
+      .attr("width", xScale(ndviVal))
       .attr("height", yScale.bandwidth())
       .attr("fill", color)
       .attr("rx", 3)
@@ -1675,14 +1912,14 @@ function renderFieldRanking() {
         showTooltip(barTip, event.pageX, event.pageY);
       });
     svg.append("text")
-      .attr("x", xScale(f.current_ndvi) - 4)
+      .attr("x", xScale(ndviVal) - 4)
       .attr("y", yScale(f.name) + yScale.bandwidth() / 2)
       .attr("text-anchor", "end")
       .attr("dy", "0.35em")
       .attr("font-size", "11px")
       .attr("fill", "#fff")
       .attr("font-weight", "700")
-      .text(f.current_ndvi.toFixed(3));
+      .text(ndviVal.toFixed(3));
   });
 }
 
@@ -1690,7 +1927,13 @@ function renderFieldRanking() {
 function renderNDVIvsAWC() {
   const container = d3.select("#ndvi-vs-awc");
   container.html("");
-  let ff = state.getFilteredFields().filter(f => f.current_ndvi != null && f.soil?.awc_in_in != null);
+  var isCurrent = state.filters.selectedYear === String(new Date().getFullYear());
+  let ff = state.getFilteredFields();
+  if (isCurrent) {
+    ff = ff.filter(f => f.current_ndvi != null && f.soil?.awc_in_in != null);
+  } else {
+    ff = ff.filter(f => f.ndvi_series && f.ndvi_series.length >= 2 && f.soil?.awc_in_in != null);
+  }
   if (!ff.length) return;
 
   const rect = container.node().getBoundingClientRect();
@@ -1704,11 +1947,23 @@ function renderNDVIvsAWC() {
     .append("g")
     .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
 
+  // Pre-compute stress days for reference mode
+  var stressDaysByField = {};
+  if (!isCurrent) {
+    ff.forEach(function(f) {
+      stressDaysByField[f.id] = computeStressDuration(f.ndvi_series, CONFIG);
+    });
+    var stressVals = ff.map(function(f) { return stressDaysByField[f.id]; });
+    var maxStress = d3.max(stressVals) || 0;
+  }
+
   const xExtent = d3.extent(ff, f => f.soil.awc_in_in);
-  const yExtent = [0, 1];
+  var yExtent = isCurrent ? [0, 1] : [0, Math.max(maxStress * 1.15, 10)];
   const xPad = (xExtent[1] - xExtent[0]) * 0.1 || 0.1;
   const xScale = d3.scaleLinear().domain([Math.max(0, xExtent[0] - xPad), xExtent[1] + xPad]).range([0, width]);
   const yScale = d3.scaleLinear().domain(yExtent).range([height, 0]);
+
+  d3.select("#scatter-title").text(isCurrent ? "NDVI vs. Available Water Storage" : "Season Stress Duration vs. Available Water Storage");
 
   svg.append("g").attr("class", "axis").call(d3.axisLeft(yScale).ticks(5));
   svg.append("g").attr("class", "axis").attr("transform", "translate(0," + height + ")")
@@ -1719,15 +1974,21 @@ function renderNDVIvsAWC() {
   svg.append("text").attr("class", "chart-title")
     .attr("x", -(height / 2)).attr("y", -(margin.left - 14))
     .attr("transform", "rotate(-90)").attr("text-anchor", "middle")
-    .text("NDVI");
+    .text(isCurrent ? "NDVI" : "Days in Watch/Critical");
 
   const r = Math.min(12, width / ff.length * 0.8);
   ff.forEach(f => {
+    var yVal = isCurrent ? f.current_ndvi : stressDaysByField[f.id];
     const color = THRESHOLD_LABELS[f.current_risk]?.color || "#999";
-    const scatterTip = "<strong>" + f.name + "</strong><br>NDVI: " + f.current_ndvi + "<br>AWS: " + f.soil.awc_in_in + " in<br>Risk: " + f.current_risk;
+    var scatterTip;
+    if (isCurrent) {
+      scatterTip = "<strong>" + f.name + "</strong><br>NDVI: " + f.current_ndvi + "<br>AWS: " + f.soil.awc_in_in + " in<br>Risk: " + f.current_risk;
+    } else {
+      scatterTip = "<strong>" + f.name + "</strong><br>Stress: " + yVal + " days<br>AWS: " + f.soil.awc_in_in + " in<br>Risk: " + f.current_risk;
+    }
     svg.append("circle")
       .attr("cx", xScale(f.soil.awc_in_in))
-      .attr("cy", yScale(f.current_ndvi))
+      .attr("cy", yScale(yVal))
       .attr("r", r)
       .attr("fill", color)
       .attr("data-default-op", 0.7)
@@ -1747,7 +2008,7 @@ function renderNDVIvsAWC() {
       });
     svg.append("text")
       .attr("x", xScale(f.soil.awc_in_in))
-      .attr("y", yScale(f.current_ndvi) - r - 4)
+      .attr("y", yScale(yVal) - r - 4)
       .attr("text-anchor", "middle")
       .attr("font-size", "9px")
       .attr("fill", "#555")
@@ -1767,6 +2028,11 @@ function renderMap() {
 
   var allCornFields = ALL_FIELDS.filter(function(f) { return isFieldCorn(f, year) && f.geometry?.geometry; });
   if (!allCornFields.length) return;
+
+  // Use dynamically-computed field data (risk, NDVI) for the selected year
+  var filteredFields = state.getFilteredFields();
+  var ffMap = {};
+  filteredFields.forEach(function(ff) { ffMap[ff.id] = ff; });
 
   var visibleFields = selectedIds.length > 0
     ? allCornFields.filter(function(f) { return selectedIds.includes(f.id); })
@@ -1800,8 +2066,11 @@ function renderMap() {
   // Draw fields — use markers for tiny polygons, true polygons otherwise
   allCornFields.forEach(function(f) {
     var visible = selectedIds.length === 0 || selectedIds.includes(f.id);
-    var fillColor = visible ? (THRESHOLD_LABELS[f.current_risk]?.color || "#999") : "#e0e0e0";
-    var fieldName = f.name, fieldRisk = f.current_risk, fieldNdvi = f.current_ndvi, fieldAcres = f.area_acres;
+    var dynamic = ffMap[f.id];
+    var fieldRisk = dynamic ? dynamic.current_risk : f.current_risk;
+    var fieldNdvi = dynamic ? dynamic.display_ndvi : f.current_ndvi;
+    var fillColor = visible ? (THRESHOLD_LABELS[fieldRisk]?.color || "#999") : "#e0e0e0";
+    var fieldName = f.name, fieldAcres = f.area_acres;
     var fieldId = f.id;
     var centroid = geoPath.centroid(f.geometry.geometry);
 
@@ -1839,14 +2108,14 @@ function renderMap() {
       syncFilters();
     });
 
-    labelData.push({ f: f, cx: centroid[0], cy: centroid[1] });
+    labelData.push({ f: f, cx: centroid[0], cy: centroid[1], ndvi: fieldNdvi });
   });
 
   // Collision avoidance — AABB test on estimated label extents, settled-state.
   // Label text is "Field N (0.NN)" — ~6px per character at 10px bold is conservative.
   var CHAR_W = 6, LINE_H = 16;
   function labelWidth(ld) {
-    var txt = ld.f.name + ' (' + (ld.f.current_ndvi != null ? ld.f.current_ndvi.toFixed(2) : '--') + ')';
+    var txt = ld.f.name + ' (' + (ld.ndvi != null ? ld.ndvi.toFixed(2) : '--') + ')';
     return txt.length * CHAR_W;
   }
   for (var i = 0; i < labelData.length; i++) labelData[i].oy = 0;
@@ -1896,7 +2165,7 @@ function renderMap() {
       .attr("stroke", "#333")
       .attr("stroke-width", "2px")
       .style("pointer-events", "none")
-      .text(ld.f.name + " (" + (ld.f.current_ndvi != null ? ld.f.current_ndvi.toFixed(2) : '--') + ")");
+      .text(ld.f.name + " (" + (ld.ndvi != null ? ld.ndvi.toFixed(2) : '--') + ")");
   });
 
   // Zoom behavior
@@ -1939,7 +2208,7 @@ function renderGDD() {
     for (var i = 0; i < daily.dates.length; i++) {
       var tmax = +daily.T2M_MAX[i], tmin = +daily.T2M_MIN[i];
       if (tmax == null || tmin == null || isNaN(tmax) || isNaN(tmin)) continue;
-      const gdd = Math.max(0, (tmax + tmin) / 2 - 10);
+      const gdd = Math.max(0, ((tmax + tmin) / 2 * 9 / 5 + 32) - (CONFIG.gdd_base_temp_f || 50));
       byDate[daily.dates[i]] = (byDate[daily.dates[i]] || 0) + gdd;
     }
     const sorted = Object.entries(byDate).sort((a, b) => a[0].localeCompare(b[0]));
@@ -2001,6 +2270,7 @@ function renderGDD() {
     svg.append("path")
       .datum(fd.current)
       .attr("fill", "none")
+      .attr("data-field-id", fd.id)
       .attr("data-default-sw", 2)
       .attr("data-default-op", 0.7)
       .attr("stroke", gddColorScale(fd.id))
@@ -2017,6 +2287,37 @@ function renderGDD() {
         d3.select(this).attr("stroke-width", 4).attr("opacity", 1);
         showTooltip(gddTip, event.pageX, event.pageY);
       });
+  });
+
+  // HTML legend (like map legend)
+  var gddLegendEl = document.getElementById("gdd-legend");
+  gddLegendEl.innerHTML = "";
+  fieldData.forEach(function(fd) {
+    var lastPt = fd.current.length ? fd.current[fd.current.length - 1] : null;
+    var tipHtml = lastPt
+      ? "<strong>" + fd.name + "</strong><br>GDD Accumulated: " + lastPt.gdd + " &deg;F-days"
+      : "<strong>" + fd.name + "</strong><br>No GDD data";
+    var item = document.createElement("span");
+    item.className = "legend-item";
+    item.style.cursor = "pointer";
+    item.innerHTML = '<span class="legend-swatch" style="background:' + gddColorScale(fd.id) + '"></span>' + fd.name;
+    (function(fid, fSeries) {
+      item.addEventListener("click", function(event) {
+        event.stopPropagation();
+        svg.selectAll("path[data-field-id]").each(function() {
+          var p = d3.select(this);
+          p.attr("stroke-width", p.attr("data-default-sw")).attr("opacity", p.attr("data-default-op"));
+        });
+        svg.select('path[data-field-id="' + fid + '"]').attr("stroke-width", 4).attr("opacity", 1);
+        var svgNode = document.querySelector("#gdd-chart svg");
+        var svgRect = svgNode.getBoundingClientRect();
+        var pt = fSeries[fSeries.length - 1];
+        var tipX = svgRect.left + window.scrollX + margin.left + xScale(new Date(pt.date));
+        var tipY = svgRect.top + window.scrollY + margin.top + yScale(pt.gdd);
+        showTooltip(tipHtml, tipX, tipY);
+      });
+    })(fd.id, fd.current);
+    gddLegendEl.appendChild(item);
   });
 
   // Growth stage annotations — identical to NDVI chart: dashed verticals at the
@@ -2175,13 +2476,18 @@ function renderSoil() {
 
 // ===== ACTION LIST =====
 function renderActionList() {
-  var section = d3.select("#action-list-section");
   var isCurrent = state.filters.selectedYear === String(new Date().getFullYear());
-  if (!isCurrent) {
-    section.style("display", "none");
-    return;
+  if (isCurrent) {
+    renderPriorityActions();
+  } else {
+    renderSeasonRecap();
   }
+}
+
+function renderPriorityActions() {
+  var section = d3.select("#action-list-section");
   section.style("display", "block");
+  d3.select("#action-list-section h3").text("Priority Actions");
 
   let ff = state.getFilteredFields()
     .filter(f => f.current_risk === 'critical' || f.current_risk === 'watch')
@@ -2234,22 +2540,99 @@ function renderActionList() {
   container.html(html);
 }
 
+function renderSeasonRecap() {
+  var section = d3.select("#action-list-section");
+  section.style("display", "block");
+  d3.select("#action-list-section h3").text("Season Recap & Notable Events");
+
+  var ff = state.getFilteredFields();
+  if (!ff.length) {
+    d3.select("#action-list").html('<p style="color:#777; font-size:0.85rem;">No field data available for this season.</p>');
+    return;
+  }
+
+  // Pre-compute stage map per unique weather series
+  var stageMapCache = {};
+  ff.forEach(function(f) {
+    if (!stageMapCache[f.weather_series_id]) {
+      var wd = state.getFilteredWeather(f);
+      var result = computeDateStageMap(wd, CONFIG);
+      stageMapCache[f.weather_series_id] = result ? result.dateStageMap : null;
+    }
+  });
+
+  ff.sort(function(a, b) {
+    var stressA = computeStressDuration(a.ndvi_series, CONFIG);
+    var stressB = computeStressDuration(b.ndvi_series, CONFIG);
+    if (stressB !== stressA) return stressB - stressA;
+    return (b.current_ndvi || 0) - (a.current_ndvi || 0);
+  });
+
+  var html = '';
+  ff.forEach(function(f) {
+    var series = f.ndvi_series;
+    if (!series || series.length < 2) return;
+
+    var totalSeasonDays = Math.round((new Date(series[series.length - 1].date) - new Date(series[0].date)) / 86400000) || 90;
+    var stressDays = computeStressDuration(series, CONFIG);
+    var stressPct = totalSeasonDays > 0 ? stressDays / totalSeasonDays : 0;
+
+    var badgeLabel, badgeColor;
+    if (stressPct > 0.30) {
+      badgeLabel = 'High Stress';
+      badgeColor = THRESHOLD_LABELS.critical.color;
+    } else if (stressPct >= 0.10) {
+      badgeLabel = 'Moderate Stress';
+      badgeColor = THRESHOLD_LABELS.watch.color;
+    } else {
+      badgeLabel = 'Strong Season';
+      badgeColor = THRESHOLD_LABELS.healthy.color;
+    }
+
+    var peakNDVI = d3.max(series, function(d) { return d.value; });
+    var peakDate = '';
+    if (peakNDVI != null) {
+      for (var pi = 0; pi < series.length; pi++) {
+        if (series[pi].value === peakNDVI) {
+          var pd = new Date(series[pi].date);
+          peakDate = pd.toLocaleString('en-US', { month: 'long' });
+          break;
+        }
+      }
+    }
+
+    var weatherData = state.getFilteredWeather(f);
+    var eventLine = detectNotableEvent(series, weatherData, CONFIG, stageMapCache[f.weather_series_id]);
+
+    html += '<div class="action-item">' +
+      '<span class="risk-badge" style="background:' + badgeColor + '">' + badgeLabel + '</span>' +
+      '<span class="risk-text">' +
+        '<strong>' + f.name + '</strong><br>' +
+        '<span style="color:#777; font-size:0.8rem;">Reached peak NDVI of ' + (peakNDVI != null ? peakNDVI.toFixed(2) : '--') + (peakDate ? ' in ' + peakDate : '') + ' &middot; ' + stressDays + ' days in Watch/Critical this season</span>' +
+        (eventLine ? '<br><span style="color:#777; font-size:0.8rem;">' + eventLine + '</span>' : '') +
+      '</span>' +
+    '</div>';
+  });
+  d3.select("#action-list").html(html || '<p style="color:#777; font-size:0.85rem;">No field data available for this season.</p>');
+}
+
 // ===== NARRATIVE =====
 function renderNarrative() {
   const ff = state.getFilteredFields();
+  var isCurrent = state.filters.selectedYear === String(new Date().getFullYear());
   const total = ff.length;
   const crit = ff.filter(f => f.current_risk === 'critical').length;
   const watch = ff.filter(f => f.current_risk === 'watch').length;
   const healthy = ff.filter(f => f.current_risk === 'healthy').length;
-  const ndviArr = ff.filter(f => f.current_ndvi != null);
-  const ndviAvg = ndviArr.length ? ndviArr.reduce((s, f) => s + f.current_ndvi, 0) / ndviArr.length : 0;
+  const ndviArr = ff.filter(f => f.display_ndvi != null);
+  const ndviAvg = ndviArr.length ? ndviArr.reduce((s, f) => s + f.display_ndvi, 0) / ndviArr.length : 0;
   const declining = ff.filter(f => f.ndvi_trend === 'declining').length;
   const improving = ff.filter(f => f.ndvi_trend === 'improving').length;
   const lowAWC = ff.filter(f => f.soil?.awc_in_in != null && f.soil.awc_in_in < 1.0).length;
   const highOM = ff.filter(f => f.soil?.om_pct != null && f.soil.om_pct > 3).length;
   const awcVals = ff.filter(f => f.soil?.awc_in_in != null).map(f => f.soil.awc_in_in);
   const omVals = ff.filter(f => f.soil?.om_pct != null).map(f => f.soil.om_pct);
-  const scatterCount = ff.filter(f => f.current_ndvi != null && f.soil?.awc_in_in != null).length;
+  const scatterCount = ff.filter(f => f.display_ndvi != null && f.soil?.awc_in_in != null).length;
   const gddVals = ff.map(f => f.weather_summary?.gdd_accumulated || 0);
   const gdd = gddVals.length ? Math.round(gddVals.reduce((a,b) => a+b, 0) / gddVals.length) : 0;
   const normal = ff[0]?.weather_summary?.gdd_normal || 0;
@@ -2257,7 +2640,7 @@ function renderNarrative() {
 
   let html = '';
 
-  html += '<p><strong>Patterns & Trends.</strong> Of ' + total + ' fields, <strong>' + crit + ' critical</strong> and <strong>' + watch + ' watch</strong> require attention. Average NDVI across all fields is <strong>' + ndviAvg.toFixed(3) + '</strong>.';
+  html += '<p><strong>Patterns & Trends.</strong> Of ' + total + ' fields, <strong>' + crit + ' critical</strong> and <strong>' + watch + ' watch</strong> require attention. Average ' + (isCurrent ? '' : 'peak ') + 'NDVI across all fields is <strong>' + ndviAvg.toFixed(3) + '</strong>.';
   if (declining > 0) html += ' ' + declining + ' field(s) show declining NDVI trend, warranting priority monitoring.';
   if (improving > 0) html += ' ' + improving + ' field(s) are improving.';
   html += ' ' + healthy + ' field(s) appear healthy and stable.</p>';
@@ -2290,7 +2673,7 @@ function renderNarrative() {
     (awcVals.length ? d3.min(awcVals).toFixed(2) : '--') + ' to ' + (awcVals.length ? d3.max(awcVals).toFixed(2) : '--') +
     ' in AWS and ' + (omVals.length ? d3.min(omVals).toFixed(1) : '--') + '% to ' +
     (omVals.length ? d3.max(omVals).toFixed(1) : '--') +
-    '% organic matter. This variation directly correlates with NDVI differences -- the scatter plot of NDVI vs. AWS shows ' +
+    '% organic matter. This variation directly correlates with NDVI differences -- the scatter plot of ' + (isCurrent ? 'NDVI' : 'Season Stress Duration') + ' vs. AWS shows ' +
     (scatterCount > 3 ? 'a visible positive relationship' : 'limited correlation given available datapoints') + '.</p>';
 
   if (crit > 0) {
@@ -2305,7 +2688,11 @@ function renderNarrative() {
   } else {
     html += 'GDD accumulation (' + gdd + ' &deg;F-days) is near normal (' + normal + ' &deg;F-days).';
   }
-  html += ' The priority action list above ranks fields by risk severity for operational triage.</p>';
+  if (isCurrent) {
+    html += ' The priority action list above ranks fields by risk severity for operational triage.</p>';
+  } else {
+    html += ' The Season Recap panel above ranks fields by stress duration for the season.</p>';
+  }
 
   if (crit > 0) {
     html += '<p><strong>Key Variables.</strong> NDVI trend direction, soil AWC, and GDD accumulation are the three most important indicators in this analysis. Fields with low AWC and declining NDVI consistently appear in the critical tier and should be prioritized for irrigation and stand assessment.</p>';
