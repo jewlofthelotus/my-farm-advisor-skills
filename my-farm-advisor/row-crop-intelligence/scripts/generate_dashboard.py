@@ -865,7 +865,7 @@ svg.icon-lg { width: 24px; height: 24px; }
 
   <div class="chart-grid">
     <div class="chart-card">
-      <h3>GDD Accumulation: Actual vs. Normal<span class="map-legend" id="gdd-legend"></span></h3>
+      <h3>GDD Accumulation: Actual vs. Target<span class="map-legend" id="gdd-legend"></span></h3>
       <div class="chart-container" id="gdd-chart"></div>
     </div>
     <div class="chart-card">
@@ -1504,10 +1504,8 @@ function renderKPIs() {
   const gddVals = ff.map(f => f.weather_summary?.gdd_accumulated || 0);
   const avgGDD = gddVals.length ? Math.round(gddVals.reduce((a,b) => a+b, 0) / gddVals.length) : 0;
 
-  // GDD card — for current year, show growth stage label instead of target reminder
-  var gddTrendLine = isCurrent && stageLabel
-    ? 'Growth Stage: ' + stageLabel + ' &middot; ' + stageDesc
-    : 'Target: ' + CONFIG.gdd_target + ' &deg;F-days';
+  var normalGDD = ff[0]?.weather_summary?.gdd_normal || 0;
+  var gddTrendLine = 'Target: ' + CONFIG.gdd_target + ' (maturity) &middot; Annual Avg: ' + normalGDD;
   var gddCardHtml =
     '<div class="kpi-card healthy">' +
       '<div class="kpi-label">' + ICONS.temp + ' GDD Accumulated (avg)</div>' +
@@ -1527,8 +1525,8 @@ function renderKPIs() {
     d3.select("#kpi-row").html(
       '<div class="kpi-card headline ' + riskClass + '">' +
         '<div class="kpi-label">' + ICONS.warning + ' Fields Requiring Attention</div>' +
-        '<div class="kpi-value">' + attention + ' / ' + total + '</div>' +
-        '<div class="kpi-trend">' + critical + ' critical &middot; ' + watch + ' watch</div>' +
+        '<div class="kpi-value">' + attention + ' / ' + total + ' <span class="kpi-unit">' + critical + ' critical &middot; ' + watch + ' watch</span></div>' +
+        (stageLabel && stageDesc ? '<div class="kpi-trend">Growth Stage: ' + stageLabel + ' &middot; ' + stageDesc + '</div>' : '<div class="kpi-trend"></div>') +
       '</div>' +
       '<div class="kpi-card ' + ndviTier + '">' +
         '<div class="kpi-label">' + ICONS.plant + ' Average NDVI</div>' +
@@ -1624,6 +1622,8 @@ function renderNDVITimeSeries() {
   });
   if (!allPoints.length) return;
 
+  var lastNdviDate = d3.max(allPoints, function(p) { return new Date(p.date); });
+
   const year = state.filters.selectedYear;
   const xExtent = getChartDateExtent(ff, year);
   const yExtent = [0, 1];
@@ -1636,7 +1636,7 @@ function renderNDVITimeSeries() {
   svg.append("line")
     .attr("x1", 0).attr("x2", width)
     .attr("y1", yScale(CONFIG.stress_threshold)).attr("y2", yScale(CONFIG.stress_threshold))
-    .attr("stroke", "#D95F4A").attr("stroke-dasharray", "6,3").attr("stroke-width", 1.5)
+    .attr("stroke", "#D95F4A").attr("stroke-dasharray", "2,2").attr("stroke-width", 1.5)
     .append("title").text("Stress threshold: " + CONFIG.stress_threshold);
 
   svg.append("text")
@@ -1644,16 +1644,7 @@ function renderNDVITimeSeries() {
     .attr("text-anchor", "end").attr("font-size", "10px").attr("fill", "#D95F4A")
     .text("Stress");
 
-  svg.append("line")
-    .attr("x1", 0).attr("x2", width)
-    .attr("y1", yScale(CONFIG.watch_threshold)).attr("y2", yScale(CONFIG.watch_threshold))
-    .attr("stroke", "#E8A838").attr("stroke-dasharray", "4,4").attr("stroke-width", 1)
-    .append("title").text("Watch threshold: " + CONFIG.watch_threshold);
 
-  svg.append("text")
-    .attr("x", width).attr("y", yScale(CONFIG.watch_threshold) - 4)
-    .attr("text-anchor", "end").attr("font-size", "10px").attr("fill", "#E8A838")
-    .text("Watch");
 
   // Growth stage annotations (vertical lines from cumulative GDD)
   var stageColors = {"VE":"#4CAF50","V6":"#8BC34A","VT":"#FFC107","R1":"#FF9800","R2":"#FF5722","R3":"#795548","R4":"#9C27B0","R5":"#3F51B5","R6":"#607D8B"};
@@ -1749,6 +1740,38 @@ function renderNDVITimeSeries() {
         }
       }
     });
+
+    // Watch threshold path (growth-stage-adjusted)
+    if (lastNdviDate) {
+      var watchData = [];
+      for (var i = 0; i < dailyData.dates.length; i++) {
+        var dObj = new Date(dailyData.dates[i]);
+        if (dObj < chartStart) continue;
+        if (dObj > lastNdviDate) break;
+        watchData.push({ date: dObj, value: healthyThresholdForStage(cumGDDArr[i], CONFIG) });
+      }
+      if (watchData.length > 0) {
+        var watchLine = d3.line()
+          .x(function(d) { return xScale(d.date); })
+          .y(function(d) { return yScale(d.value); });
+        svg.append("path")
+          .datum(watchData)
+          .attr("fill", "none")
+          .attr("stroke", "#E8A838")
+          .attr("stroke-dasharray", "2,2")
+          .attr("stroke-width", 1)
+          .attr("d", watchLine)
+          .append("title").text("Watch threshold (growth-stage-adjusted)");
+        var lastWatch = watchData[watchData.length - 1];
+        svg.append("text")
+          .attr("x", xScale(lastWatch.date))
+          .attr("y", yScale(lastWatch.value) - 4)
+          .attr("text-anchor", "end")
+          .attr("font-size", "10px")
+          .attr("fill", "#E8A838")
+          .text("Watch");
+      }
+    }
   }
 
   svg.append("g").attr("class", "axis").call(d3.axisLeft(yScale).ticks(6));
@@ -2251,8 +2274,9 @@ function renderGDD() {
     .append("g")
     .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
 
+  const targetGDD = CONFIG.gdd_target;
   const normalGDD = ff[0].weather_summary?.gdd_normal || 1500;
-  const maxGDD = Math.max(normalGDD, ...fieldData.map(f => f.current.length ? f.current[f.current.length - 1].gdd : 0));
+  const maxGDD = Math.max(targetGDD, normalGDD, ...fieldData.map(f => f.current.length ? f.current[f.current.length - 1].gdd : 0));
   const maxY = Math.ceil(maxGDD / 500) * 500;
 
   const year = state.filters.selectedYear;
@@ -2271,12 +2295,12 @@ function renderGDD() {
 
   svg.append("line")
     .attr("x1", 0).attr("x2", width)
-    .attr("y1", yScale(normalGDD)).attr("y2", yScale(normalGDD))
-    .attr("stroke", "#999").attr("stroke-dasharray", "6,3").attr("stroke-width", 1.5);
+    .attr("y1", yScale(targetGDD)).attr("y2", yScale(targetGDD))
+    .attr("stroke", "#e67e22").attr("stroke-dasharray", "6,3").attr("stroke-width", 1.5);
   svg.append("text")
-    .attr("x", width).attr("y", yScale(normalGDD) - 4)
-    .attr("text-anchor", "end").attr("font-size", "10px").attr("fill", "#777")
-    .text("Normal: " + normalGDD + " \u00b0F-days");
+    .attr("x", width).attr("y", yScale(targetGDD) - 4)
+    .attr("text-anchor", "end").attr("font-size", "10px").attr("fill", "#e67e22")
+    .text("Target: " + targetGDD + " \u00b0F-days (maturity)");
 
   var gddColorScale = d3.scaleOrdinal(d3.schemeTableau10).domain(ff.map(f => f.id));
   const line = d3.line()
@@ -2424,7 +2448,7 @@ function renderGDD() {
 function renderSoil() {
   const container = d3.select("#soil-chart");
   container.html("");
-  let ff = state.getFilteredFields().filter(f => f.soil?.om_pct != null).sort((a, b) => a.soil.om_pct - b.soil.om_pct);
+  let ff = state.getFilteredFields().filter(f => f.soil?.om_pct != null).sort((a, b) => b.soil.om_pct - a.soil.om_pct);
   if (!ff.length) return;
 
   const rect = container.node().getBoundingClientRect();
@@ -2727,12 +2751,17 @@ function renderNarrative() {
   } else {
     html += '<p><strong>Decisions & Actions.</strong> ' + (isCurrent ? 'No fields require immediate intervention. Continue routine monitoring of Watch-tier fields, particularly for soil moisture and NDVI trend.' : 'No fields required immediate intervention this season. Watch-tier fields combined moderate stress duration with lower available water storage -- a starting point for next-season irrigation or drainage planning.') + ' ';
   }
-  if (gddDiff < -100) {
-    html += 'GDD accumulation (' + gdd + ' &deg;F-days) is below normal (' + normal + ' &deg;F-days), which ' + (isCurrent ? 'may delay' : 'likely delayed') + ' maturity.';
-  } else if (gddDiff > 200) {
-    html += 'GDD accumulation (' + gdd + ' &deg;F-days) exceeds normal (' + normal + ' &deg;F-days), advancing crop development.';
+  if (isCurrent) {
+    var pctOfTarget = gdd > 0 ? Math.round(gdd / CONFIG.gdd_target * 100) : 0;
+    html += 'GDD accumulation (' + gdd + ' &deg;F-days) is ' + pctOfTarget + '% of the way to the maturity target (' + CONFIG.gdd_target + ' &deg;F-days).';
   } else {
-    html += 'GDD accumulation (' + gdd + ' &deg;F-days) is near normal (' + normal + ' &deg;F-days).';
+    if (gddDiff < -100) {
+      html += 'GDD accumulation (' + gdd + ' &deg;F-days) is below normal (' + normal + ' &deg;F-days), which likely delayed maturity.';
+    } else if (gddDiff > 200) {
+      html += 'GDD accumulation (' + gdd + ' &deg;F-days) exceeds normal (' + normal + ' &deg;F-days), advancing crop development.';
+    } else {
+      html += 'GDD accumulation (' + gdd + ' &deg;F-days) is near normal (' + normal + ' &deg;F-days).';
+    }
   }
   if (isCurrent) {
     html += ' The priority action list above ranks fields by risk severity for operational triage.</p>';
