@@ -951,20 +951,7 @@ function computeCurrentGDDFromWeather(weatherData, displayYear, config) {
   }
 
   // --- Determine planting date (last spring frost before July 1, else Apr 20) ---
-  var frostThresholdC = 0.0;
-  var defaultPlanting = new Date(displayYear + '-04-20');
-  var lastFrostDate = null;
-  for (var i = 0; i < weatherData.dates.length; i++) {
-    var tminVal = +weatherData.T2M_MIN[i];
-    if (!isNaN(tminVal) && tminVal <= frostThresholdC) {
-      var dObj = new Date(weatherData.dates[i]);
-      var doy  = Math.floor((dObj - new Date(dObj.getFullYear(), 0, 0)) / 86400000);
-      if (doy <= 182) {
-        if (!lastFrostDate || dObj > lastFrostDate) lastFrostDate = dObj;
-      }
-    }
-  }
-  var plantingDate = (lastFrostDate && lastFrostDate > defaultPlanting) ? lastFrostDate : defaultPlanting;
+  var plantingDate = getPlantingDate(weatherData, displayYear);
 
   // --- Accumulate GDD in °F from planting date ---
   var cumGDD = 0;
@@ -1090,11 +1077,14 @@ function computeNDVITrend(ndviSeries, phase) {
 
 function computeWeatherSummaries(weatherRecords, config) {
   if (!weatherRecords || !weatherRecords.dates || !weatherRecords.dates.length) return { gdd_accumulated: 0, days_since_significant_rain: null };
+  var displayYear = weatherRecords.dates[0].slice(0, 4);
+  var plantingDate = getPlantingDate(weatherRecords, displayYear);
   var significantMm = config.precip_significant_mm || 2.54;
   var gddTotal = 0;
   var precipTotal = 0;
   var lastRainIdx = -1;
   for (var i = 0; i < weatherRecords.dates.length; i++) {
+    if (plantingDate && new Date(weatherRecords.dates[i]) < plantingDate) continue;
     var tmax = +weatherRecords.T2M_MAX[i], tmin = +weatherRecords.T2M_MIN[i];
     if (tmax != null && tmin != null && !isNaN(tmax) && !isNaN(tmin)) {
       gddTotal += Math.max(0, ((tmax + tmin) / 2 * 9 / 5 + 32) - (config.gdd_base_temp_f || 50));
@@ -1114,6 +1104,42 @@ function computeWeatherSummaries(weatherRecords, config) {
     daysSince = Math.floor((utcNow - utcRain) / 86400000);
   }
   return { gdd_accumulated: Math.round(gddTotal), days_since_significant_rain: daysSince, total_precip_mm: Math.round(precipTotal) };
+}
+
+function getPlantingDate(weatherData, displayYear) {
+  if (!weatherData || !weatherData.dates || !weatherData.dates.length) return null;
+  var frostThresholdC = 0.0;
+  var defaultPlanting = new Date(displayYear + '-04-20');
+  var lastFrostDate = null;
+  for (var i = 0; i < weatherData.dates.length; i++) {
+    var tminVal = +weatherData.T2M_MIN[i];
+    if (!isNaN(tminVal) && tminVal <= frostThresholdC) {
+      var dObj = new Date(weatherData.dates[i]);
+      var doy  = Math.floor((dObj - new Date(dObj.getFullYear(), 0, 0)) / 86400000);
+      if (doy <= 182) {
+        if (!lastFrostDate || dObj > lastFrostDate) lastFrostDate = dObj;
+      }
+    }
+  }
+  return (lastFrostDate && lastFrostDate > defaultPlanting) ? lastFrostDate : defaultPlanting;
+}
+
+function getChartDateExtent(ff, year) {
+  var isCurrent = year === String(new Date().getFullYear());
+  var allDates = [];
+  ff.forEach(function(f) {
+    (f.ndvi_series || []).forEach(function(p) { allDates.push(new Date(p.date)); });
+  });
+  if (!allDates.length) {
+    return [new Date(year + '-01-01'), isCurrent ? new Date() : new Date(year + '-12-31')];
+  }
+  var minD = new Date(Math.min.apply(null, allDates));
+  var maxD = new Date(Math.max.apply(null, allDates));
+  minD.setDate(minD.getDate() - 7);
+  maxD.setDate(maxD.getDate() + 7);
+  var upperBound = isCurrent ? new Date() : new Date(year + '-12-31');
+  if (maxD > upperBound) maxD = upperBound;
+  return [minD, maxD];
 }
 
 function computeStressDuration(ndviSeries, config) {
@@ -1150,20 +1176,9 @@ function computeDateStageMap(weatherData, config) {
     R1: 'Silking', R2: 'Blister', R3: 'Milk',
     R4: 'Dough',  R5: 'Dent',    R6: 'Maturing',
   };
-  var frostThresholdC = 0.0;
-  var defaultPlanting = new Date(weatherData.dates[0].slice(0, 4) + '-04-20');
-  var lastFrostDate = null;
-  for (var i = 0; i < weatherData.dates.length; i++) {
-    var tminVal = +weatherData.T2M_MIN[i];
-    if (!isNaN(tminVal) && tminVal <= frostThresholdC) {
-      var dObj = new Date(weatherData.dates[i]);
-      var doy = Math.floor((dObj - new Date(dObj.getFullYear(), 0, 0)) / 86400000);
-      if (doy <= 182) {
-        if (!lastFrostDate || dObj > lastFrostDate) lastFrostDate = dObj;
-      }
-    }
-  }
-  var plantingDate = (lastFrostDate && lastFrostDate > defaultPlanting) ? lastFrostDate : defaultPlanting;
+  var displayYear = weatherData.dates[0].slice(0, 4);
+  var plantingDate = getPlantingDate(weatherData, displayYear);
+  if (!plantingDate) return null;
 
   var dateStageMap = [];
   var cumGDD = 0;
@@ -1609,7 +1624,8 @@ function renderNDVITimeSeries() {
   });
   if (!allPoints.length) return;
 
-  const xExtent = d3.extent(allPoints, d => new Date(d.date));
+  const year = state.filters.selectedYear;
+  const xExtent = getChartDateExtent(ff, year);
   const yExtent = [0, 1];
 
   const xScale = d3.scaleTime().domain(xExtent).range([0, width]);
@@ -2204,8 +2220,11 @@ function renderGDD() {
 
   const fieldData = ff.map(f => {
     const daily = state.getFilteredWeather(f);
+    var displayYear = state.filters.selectedYear;
+    var plantingDate = getPlantingDate(daily, displayYear);
     const byDate = {};
     for (var i = 0; i < daily.dates.length; i++) {
+      if (plantingDate && new Date(daily.dates[i]) < plantingDate) continue;
       var tmax = +daily.T2M_MAX[i], tmin = +daily.T2M_MIN[i];
       if (tmax == null || tmin == null || isNaN(tmax) || isNaN(tmin)) continue;
       const gdd = Math.max(0, ((tmax + tmin) / 2 * 9 / 5 + 32) - (CONFIG.gdd_base_temp_f || 50));
@@ -2236,7 +2255,8 @@ function renderGDD() {
   const maxGDD = Math.max(normalGDD, ...fieldData.map(f => f.current.length ? f.current[f.current.length - 1].gdd : 0));
   const maxY = Math.ceil(maxGDD / 500) * 500;
 
-  const xDomain = d3.extent(fieldData[0]?.current || [], d => new Date(d.date));
+  const year = state.filters.selectedYear;
+  const xDomain = getChartDateExtent(ff, year);
   const xScale = d3.scaleTime().domain(xDomain).range([0, width]);
   const yScale = d3.scaleLinear().domain([0, maxY]).range([height, 0]);
 
@@ -2330,18 +2350,8 @@ function renderGDD() {
   var dailyData   = state.getFilteredWeather(ff[0]);
   if (dailyData.dates.length > 0) {
     // Planting date: last spring frost (T2M_MIN <= 0°C, DOY <= 182), fallback Apr 20
-    var frostThresholdC = 0.0;
-    var defaultPlanting = new Date(displayYear + '-04-20');
-    var lastFrostDate   = null;
-    for (var i = 0; i < dailyData.dates.length; i++) {
-      var tminV = +dailyData.T2M_MIN[i];
-      if (!isNaN(tminV) && tminV <= frostThresholdC) {
-        var dObj = new Date(dailyData.dates[i]);
-        var doy  = Math.floor((dObj - new Date(dObj.getFullYear(), 0, 0)) / 86400000);
-        if (doy <= 182 && (!lastFrostDate || dObj > lastFrostDate)) lastFrostDate = dObj;
-      }
-    }
-    var plantingDate = (lastFrostDate && lastFrostDate > defaultPlanting) ? lastFrostDate : defaultPlanting;
+    var plantingDate = getPlantingDate(dailyData, displayYear);
+    if (plantingDate) {
 
     // Accumulate GDD in °F-days (base 50°F) from planting — matches growth_stages thresholds
     var cumGDD    = 0;
@@ -2406,6 +2416,7 @@ function renderGDD() {
         }
       }
     });
+  }
   }
 }
 
@@ -2628,6 +2639,8 @@ function renderNarrative() {
   const ndviAvg = ndviArr.length ? ndviArr.reduce((s, f) => s + f.display_ndvi, 0) / ndviArr.length : 0;
   const declining = ff.filter(f => f.ndvi_trend === 'declining').length;
   const improving = ff.filter(f => f.ndvi_trend === 'improving').length;
+  const aboveAvg = ff.filter(f => f.display_ndvi != null && f.ndvi_corn_avg != null && f.display_ndvi > f.ndvi_corn_avg).length;
+  const belowAvg = ff.filter(f => f.display_ndvi != null && f.ndvi_corn_avg != null && f.display_ndvi < f.ndvi_corn_avg).length;
   const lowAWC = ff.filter(f => f.soil?.awc_in_in != null && f.soil.awc_in_in < 1.0).length;
   const highOM = ff.filter(f => f.soil?.om_pct != null && f.soil.om_pct > 3).length;
   const awcVals = ff.filter(f => f.soil?.awc_in_in != null).map(f => f.soil.awc_in_in);
@@ -2638,24 +2651,58 @@ function renderNarrative() {
   const normal = ff[0]?.weather_summary?.gdd_normal || 0;
   const gddDiff = gdd - normal;
 
+  // Reference-mode correlation for scatter plot description
+  var refStressVals = [], refAwsVals = [], refScatterCount = 0;
+  function pearsonCorrelation(xs, ys) {
+    var n = xs.length, sx = 0, sy = 0, sxy = 0, sx2 = 0, sy2 = 0;
+    if (n < 3) return 0;
+    for (var i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; sxy += xs[i] * ys[i]; sx2 += xs[i] * xs[i]; sy2 += ys[i] * ys[i]; }
+    var num = n * sxy - sx * sy, den = Math.sqrt((n * sx2 - sx * sx) * (n * sy2 - sy * sy));
+    return den === 0 ? 0 : num / den;
+  }
+  if (!isCurrent) {
+    ff.forEach(function(f) {
+      if (f.ndvi_series && f.ndvi_series.length >= 2 && f.soil?.awc_in_in != null) {
+        refStressVals.push(computeStressDuration(f.ndvi_series, CONFIG));
+        refAwsVals.push(f.soil.awc_in_in);
+      }
+    });
+    refScatterCount = refStressVals.length;
+  }
+  var relationshipText;
+  if (isCurrent) {
+    relationshipText = scatterCount > 3 ? 'a visible positive relationship' : 'limited correlation given available datapoints';
+  } else if (refScatterCount > 3) {
+    var r = pearsonCorrelation(refAwsVals, refStressVals);
+    if (r < -0.15) relationshipText = 'a visible inverse relationship';
+    else if (r > 0.15) relationshipText = 'a visible positive relationship';
+    else relationshipText = 'limited correlation given available datapoints';
+  } else {
+    relationshipText = 'limited correlation given available datapoints';
+  }
+
   let html = '';
 
-  html += '<p><strong>Patterns & Trends.</strong> Of ' + total + ' fields, <strong>' + crit + ' critical</strong> and <strong>' + watch + ' watch</strong> require attention. Average ' + (isCurrent ? '' : 'peak ') + 'NDVI across all fields is <strong>' + ndviAvg.toFixed(3) + '</strong>.';
-  if (declining > 0) html += ' ' + declining + ' field(s) show declining NDVI trend, warranting priority monitoring.';
-  if (improving > 0) html += ' ' + improving + ' field(s) are improving.';
+  html += '<p><strong>Patterns & Trends.</strong> Of ' + total + ' fields, ' + (isCurrent ? '<strong>' + crit + ' critical</strong> and <strong>' + watch + ' watch</strong> require attention.' : '<strong>' + crit + ' finished the season in Critical status</strong> and <strong>' + watch + ' in Watch</strong>.') + ' Average ' + (isCurrent ? '' : 'peak ') + 'NDVI across all fields is <strong>' + ndviAvg.toFixed(3) + '</strong>.';
+  if (isCurrent) {
+    if (declining > 0) html += ' ' + declining + ' field(s) show declining NDVI trend, warranting priority monitoring.';
+    if (improving > 0) html += ' ' + improving + ' field(s) are improving.';
+  } else {
+    if (aboveAvg > 0 || belowAvg > 0) html += ' ' + aboveAvg + ' field(s) ended the season above the historical average NDVI and ' + belowAvg + ' below.';
+  }
   html += ' ' + healthy + ' field(s) appear healthy and stable.</p>';
 
   if (crit > 0) {
     html += '<p><strong>Field Health.</strong> Critical-risk fields typically combine below-threshold NDVI with declining trend. ';
     if (lowAWC > 0) {
-      html += '' + lowAWC + ' field(s) have low available water storage (AWS < 1.0 in), which likely contributes to stress under dry conditions.';
+      html += '' + lowAWC + ' field(s) have low available water storage (AWS < 1.0 in)' + (isCurrent ? ', which likely contributes to stress under dry conditions.' : ', which likely contributed to stress during dry stretches this season.');
     } else {
       html += 'Soil AWS across fields is adequate for current conditions.';
     }
     if (highOM > 0) html += ' ' + highOM + ' field(s) have elevated organic matter (>3%), supporting better moisture retention.';
     html += '</p>';
   } else if (watch > 0) {
-    html += '<p><strong>Field Health.</strong> No fields are currently in Critical status. ' + watch + ' field(s) are in Watch and warrant continued monitoring, particularly those with low available water storage.';
+    html += '<p><strong>Field Health.</strong> No fields are currently in Critical status. ' + watch + ' field(s) are in Watch' + (isCurrent ? ' and warrant continued monitoring, particularly those with low available water storage.' : ' and finished the season with moderate stress duration and lower available water storage -- a starting point for next-season irrigation or drainage planning.');
     if (lowAWC > 0) {
       html += ' ' + lowAWC + ' field(s) have low available water storage (AWS < 1.0 in).';
     } else {
@@ -2665,7 +2712,7 @@ function renderNarrative() {
     html += '</p>';
   } else {
     html += '<p><strong>Field Health.</strong> All ' + total + ' fields are Healthy. No fields require immediate attention based on NDVI thresholds.';
-    if (lowAWC > 0) html += ' ' + lowAWC + ' field(s) have low available water storage (AWS < 1.0 in), which may warrant attention under dry conditions.';
+    if (lowAWC > 0) html += ' ' + lowAWC + ' field(s) have low available water storage (AWS < 1.0 in)' + (isCurrent ? ', which may warrant attention under dry conditions.' : ', which likely contributed to stress during dry stretches this season.');
     html += '</p>';
   }
 
@@ -2673,16 +2720,15 @@ function renderNarrative() {
     (awcVals.length ? d3.min(awcVals).toFixed(2) : '--') + ' to ' + (awcVals.length ? d3.max(awcVals).toFixed(2) : '--') +
     ' in AWS and ' + (omVals.length ? d3.min(omVals).toFixed(1) : '--') + '% to ' +
     (omVals.length ? d3.max(omVals).toFixed(1) : '--') +
-    '% organic matter. This variation directly correlates with NDVI differences -- the scatter plot of ' + (isCurrent ? 'NDVI' : 'Season Stress Duration') + ' vs. AWS shows ' +
-    (scatterCount > 3 ? 'a visible positive relationship' : 'limited correlation given available datapoints') + '.</p>';
+    '% organic matter. This variation directly correlates with NDVI differences -- the scatter plot of ' + (isCurrent ? 'NDVI' : 'Season Stress Duration') + ' vs. AWS shows ' + relationshipText + '.</p>';
 
   if (crit > 0) {
-    html += '<p><strong>Decisions & Actions.</strong> Focus scouting on critical-risk fields first. ';
+    html += '<p><strong>Decisions & Actions.</strong> ' + (isCurrent ? 'Focus scouting on critical-risk fields first.' : 'Critical-risk fields ended the season with below-threshold NDVI and declining trends -- review these fields first for post-season stand assessment and drainage planning.') + ' ';
   } else {
-    html += '<p><strong>Decisions & Actions.</strong> No fields require immediate intervention. Continue routine monitoring of Watch-tier fields, particularly for soil moisture and NDVI trend. ';
+    html += '<p><strong>Decisions & Actions.</strong> ' + (isCurrent ? 'No fields require immediate intervention. Continue routine monitoring of Watch-tier fields, particularly for soil moisture and NDVI trend.' : 'No fields required immediate intervention this season. Watch-tier fields combined moderate stress duration with lower available water storage -- a starting point for next-season irrigation or drainage planning.') + ' ';
   }
   if (gddDiff < -100) {
-    html += 'GDD accumulation (' + gdd + ' &deg;F-days) is below normal (' + normal + ' &deg;F-days), which may delay maturity.';
+    html += 'GDD accumulation (' + gdd + ' &deg;F-days) is below normal (' + normal + ' &deg;F-days), which ' + (isCurrent ? 'may delay' : 'likely delayed') + ' maturity.';
   } else if (gddDiff > 200) {
     html += 'GDD accumulation (' + gdd + ' &deg;F-days) exceeds normal (' + normal + ' &deg;F-days), advancing crop development.';
   } else {
@@ -2695,9 +2741,9 @@ function renderNarrative() {
   }
 
   if (crit > 0) {
-    html += '<p><strong>Key Variables.</strong> NDVI trend direction, soil AWC, and GDD accumulation are the three most important indicators in this analysis. Fields with low AWC and declining NDVI consistently appear in the critical tier and should be prioritized for irrigation and stand assessment.</p>';
+    html += '<p><strong>Key Variables.</strong> NDVI trend direction, soil AWC, and GDD accumulation are the three most important indicators in this analysis. Fields with low AWC and declining NDVI consistently ' + (isCurrent ? 'appear in the critical tier and should be prioritized for irrigation and stand assessment.' : 'appeared in the critical tier this season -- candidates for post-season stand assessment and drainage review.') + '</p>';
   } else {
-    html += '<p><strong>Key Variables.</strong> NDVI trend direction, soil AWC, and GDD accumulation are the three most important indicators in this analysis. Fields with low AWC are the most drought-sensitive and warrant monitoring as dry conditions continue.</p>';
+    html += '<p><strong>Key Variables.</strong> NDVI trend direction, soil AWC, and GDD accumulation are the three most important indicators in this analysis. Fields with low AWC ' + (isCurrent ? 'are the most drought-sensitive and warrant monitoring as dry conditions continue.' : 'were the most drought-sensitive fields this season.') + '</p>';
   }
 
   d3.select("#narrative-text").html(html);
