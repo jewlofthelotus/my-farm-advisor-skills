@@ -1680,9 +1680,14 @@ function renderNDVITimeSeries() {
       if (dObj < plantingDate) {
         cumGDDArr.push(0);
       } else {
-        var dailyAvgF = (dailyData.T2M_MIN[i] + dailyData.T2M_MAX[i]) / 2 * 9 / 5 + 32;
-        cumGDD += Math.max(0, dailyAvgF - gddBaseF);
-        cumGDDArr.push(cumGDD);
+        var tmin = +dailyData.T2M_MIN[i], tmax = +dailyData.T2M_MAX[i];
+        if (isNaN(tmin) || isNaN(tmax)) {
+          cumGDDArr.push(cumGDD);
+        } else {
+          var avgF = (tmin + tmax) / 2 * 9 / 5 + 32;
+          cumGDD += Math.max(0, avgF - gddBaseF);
+          cumGDDArr.push(cumGDD);
+        }
       }
     }
 
@@ -2385,9 +2390,14 @@ function renderGDD() {
       if (dObj < plantingDate) {
         cumGDDArr.push(0);
       } else {
-        var avgF = (+dailyData.T2M_MIN[i] + +dailyData.T2M_MAX[i]) / 2 * 9 / 5 + 32;
-        cumGDD += Math.max(0, avgF - gddBaseF);
-        cumGDDArr.push(cumGDD);
+        var tmin = +dailyData.T2M_MIN[i], tmax = +dailyData.T2M_MAX[i];
+        if (isNaN(tmin) || isNaN(tmax)) {
+          cumGDDArr.push(cumGDD);
+        } else {
+          var avgF = (tmin + tmax) / 2 * 9 / 5 + 32;
+          cumGDD += Math.max(0, avgF - gddBaseF);
+          cumGDDArr.push(cumGDD);
+        }
       }
     }
 
