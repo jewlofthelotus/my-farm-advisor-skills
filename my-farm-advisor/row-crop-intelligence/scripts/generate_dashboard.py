@@ -1884,7 +1884,7 @@ function renderNDVITimeSeries() {
       var gapItem = document.createElement("span");
       gapItem.className = "legend-item";
       gapItem.style.marginTop = "6px";
-      gapItem.innerHTML = '<span class="legend-swatch" style="background:transparent; border-top:2px dashed #999; width:14px; height:0;"></span> \u226530-day data gap';
+      gapItem.innerHTML = '<svg width="14" height="4" viewBox="0 0 14 4"><line x1="0" y1="2" x2="14" y2="2" stroke="#999" stroke-width="2" stroke-dasharray="4,4" opacity="0.5"/></svg> \u226530-day data gap';
       legendEl.appendChild(gapItem);
     }
   });
