@@ -60,6 +60,7 @@ Crop identity rotates year to year for most fields — see Crop Rotation below. 
 - **Source:** NASA POWER (daily, 2021–2026)
 - **Variables:** T2M_MIN / T2M_MAX (°C), PRECTOTCORR (mm/day), solar radiation, humidity, wind speed
 - **Coverage:** ~2,190 daily records per field
+- **Grid key assignment** — each field's centroid is mapped to the nearest NASA POWER grid cell (0.5° × 0.625° resolution) and recorded as a `grid_key` column in the weather CSV. Fields sharing a grid cell download weather once rather than per-field, deduplicating the downstream weather series. The dashboard uses this key to build shared weather lookups.
 - **Known limitation:** NASA POWER's most recent ~1–2 months of data are frequently unavailable (a real-time publication lag, not a pipeline bug). The dashboard handles this explicitly: GDD/rain calculations skip missing days rather than propagating invalid values, and a shaded "Weather gap" region marks affected chart ranges so the limitation is visible rather than hidden.
 
 ### Crop Rotation
