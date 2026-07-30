@@ -698,7 +698,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 .header-legend-toggle .chevron { display: inline-block; transition: transform 0.25s; font-size: 0.7rem; }
 .header-legend-toggle .chevron.open { transform: rotate(90deg); }
 .header-legend-content { max-height: 0; overflow: hidden; transition: max-height 0.3s ease-in-out, padding 0.3s ease-in-out; padding: 0 0; }
-.header-legend-content.open { max-height: 280px; padding: 10px 0 4px 0; }
+.header-legend-content.open { max-height: 340px; padding: 10px 0 4px 0; }
 .header-legend-body { display: flex; gap: 40px; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 10px; }
 .header-legend-body > div { flex: 1; }
 .header-legend-body h4 { font-size: 0.72rem; font-weight: 600; color: #8899aa; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 5px; }
@@ -707,6 +707,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 .header-legend-body .sources-column { font-size: 0.78rem; color: #c8d8e8; }
 .header-legend-body .sources-column div { margin-bottom: 2px; }
 .header-legend-body .sources-column .method-label { color: #8899aa; }
+
+.header-legend-hint { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.15); font-size: 0.85rem; color: rgba(255,255,255,0.75); }
 
 .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .kpi-card { background: #fff; border-radius: 8px; padding: 16px 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
@@ -717,6 +719,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 .kpi-card.critical { border-left: 4px solid #D95F4A; }
 .kpi-card.watch { border-left: 4px solid #E8A838; }
 .kpi-card.healthy { border-left: 4px solid #4A7FB5; }
+.kpi-card.headline.critical { background: #fef0ef; }
+.kpi-card.headline.watch { background: #fef8ed; }
+.kpi-card.headline.healthy { background: #f0f5fa; }
 
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 16px; margin-bottom: 16px; }
 .chart-card { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
@@ -774,7 +779,7 @@ svg.icon-lg { width: 24px; height: 24px; }
   .header .header-filters { flex-wrap: wrap; }
   .header .header-subrow { flex-direction: column; align-items: flex-start; gap: 8px; }
   .header-legend-body { flex-direction: column; gap: 20px; }
-  .header-legend-content.open { max-height: 280px; }
+  .header-legend-content.open { max-height: 340px; }
   .footer { flex-direction: column; text-align: center; gap: 8px; }
 }
 </style>
@@ -818,6 +823,7 @@ svg.icon-lg { width: 24px; height: 24px; }
           <div><span class="method-label">Weather:</span> NASA POWER daily</div>
         </div>
       </div>
+      <div class="header-legend-hint"><em>Click any data point on a chart for details. On the map, clicking a field filters the whole dashboard instead.</em></div>
     </div>
   </div>
 
@@ -1321,7 +1327,7 @@ function renderKPIs() {
     const maxRainDays = rainDays.length ? Math.max(...rainDays) : '--';
 
     d3.select("#kpi-row").html(
-      '<div class="kpi-card ' + riskClass + '">' +
+      '<div class="kpi-card headline ' + riskClass + '">' +
         '<div class="kpi-label">' + ICONS.warning + ' Fields Requiring Attention</div>' +
         '<div class="kpi-value">' + attention + ' / ' + total + '</div>' +
         '<div class="kpi-trend">' + critical + ' critical &middot; ' + watch + ' watch</div>' +
@@ -1563,7 +1569,7 @@ function renderNDVITimeSeries() {
     const last = series[series.length - 1];
     const trendInfo = computeNDVITrend(series);
     const latestNDVI = last.value.toFixed(3);
-    const ndviTip = "<strong>" + f.name + " (" + f.id + ")</strong><br>Latest NDVI: " + latestNDVI + " on " + last.date + "<br>Trend: " + trendInfo.trend + " (" + (trendInfo.pct >= 0 ? '+' : '') + trendInfo.pct + ")";
+    const ndviTip = "<strong>" + f.name + "</strong><br>Latest NDVI: " + latestNDVI + " on " + last.date + "<br>Trend: " + trendInfo.trend + " (" + (trendInfo.pct >= 0 ? '+' : '') + trendInfo.pct + ")";
 
     svg.append("path")
       .datum(series)
@@ -1594,8 +1600,8 @@ function renderNDVITimeSeries() {
         var lastPt = fi.ndvi_series.length ? fi.ndvi_series[fi.ndvi_series.length - 1] : null;
         var trendInfo = lastPt ? computeNDVITrend(fi.ndvi_series) : null;
         var tipHtml = lastPt && trendInfo
-          ? "<strong>" + fi.name + " (" + fi.id + ")</strong><br>Latest NDVI: " + lastPt.value.toFixed(3) + " on " + lastPt.date + "<br>Trend: " + trendInfo.trend + " (" + (trendInfo.pct >= 0 ? '+' : '') + trendInfo.pct + ")"
-          : "<strong>" + fi.name + " (" + fi.id + ")</strong><br>No NDVI data";
+          ? "<strong>" + fi.name + "</strong><br>Latest NDVI: " + lastPt.value.toFixed(3) + " on " + lastPt.date + "<br>Trend: " + trendInfo.trend + " (" + (trendInfo.pct >= 0 ? '+' : '') + trendInfo.pct + ")"
+          : "<strong>" + fi.name + "</strong><br>No NDVI data";
         var item = document.createElement("span");
         item.className = "legend-item";
         item.style.cursor = "pointer";
@@ -1649,7 +1655,7 @@ function renderFieldRanking() {
 
   ff.forEach(f => {
     const color = THRESHOLD_LABELS[f.current_risk]?.color || "#999";
-    const barTip = "<strong>" + f.name + " (" + f.id + ")</strong><br>NDVI: " + f.current_ndvi.toFixed(3) + "<br>Risk: " + f.current_risk;
+    const barTip = "<strong>" + f.name + "</strong><br>NDVI: " + f.current_ndvi.toFixed(3) + "<br>Risk: " + f.current_risk;
     svg.append("rect")
       .attr("x", 0)
       .attr("y", yScale(f.name))
@@ -1718,7 +1724,7 @@ function renderNDVIvsAWC() {
   const r = Math.min(12, width / ff.length * 0.8);
   ff.forEach(f => {
     const color = THRESHOLD_LABELS[f.current_risk]?.color || "#999";
-    const scatterTip = "<strong>" + f.name + " (" + f.id + ")</strong><br>NDVI: " + f.current_ndvi + "<br>AWS: " + f.soil.awc_in_in + " in<br>Risk: " + f.current_risk;
+    const scatterTip = "<strong>" + f.name + "</strong><br>NDVI: " + f.current_ndvi + "<br>AWS: " + f.soil.awc_in_in + " in<br>Risk: " + f.current_risk;
     svg.append("circle")
       .attr("cx", xScale(f.soil.awc_in_in))
       .attr("cy", yScale(f.current_ndvi))
@@ -1991,7 +1997,7 @@ function renderGDD() {
   fieldData.forEach(fd => {
     if (fd.current.length < 2) return;
     var lastGDD = fd.current[fd.current.length - 1].gdd;
-    var gddTip = "<strong>" + fd.name + " (" + fd.id + ")</strong><br>GDD Accumulated: " + lastGDD + " &deg;F-days";
+    var gddTip = "<strong>" + fd.name + "</strong><br>GDD Accumulated: " + lastGDD + " &deg;F-days";
     svg.append("path")
       .datum(fd.current)
       .attr("fill", "none")
@@ -2133,7 +2139,7 @@ function renderSoil() {
     const color = THRESHOLD_LABELS[f.current_risk]?.color || "#7cb342";
     const awcInfo = f.soil?.awc_in_in != null ? 'AWS: ' + f.soil.awc_in_in + ' in' : '';
     const drainInfo = f.soil?.drainage_class || '';
-    const soilTip = "<strong>" + f.name + " (" + f.id + ")</strong><br>OM: " + f.soil.om_pct.toFixed(1) + "%" + (awcInfo ? '<br>' + awcInfo : '') + (drainInfo ? '<br>Drainage: ' + drainInfo : '');
+    const soilTip = "<strong>" + f.name + "</strong><br>OM: " + f.soil.om_pct.toFixed(1) + "%" + (awcInfo ? '<br>' + awcInfo : '') + (drainInfo ? '<br>Drainage: ' + drainInfo : '');
     svg.append("rect")
       .attr("x", 0)
       .attr("y", yScale(f.name))
@@ -2333,9 +2339,9 @@ function renderHeaderLegend() {
   });
   // Growth-phase gating note
   html += '<div style="margin-top:8px; font-size:0.78rem; color:#c8d8e8; line-height:1.4;">' +
-    '<em>Flagging suppressed during establishment (pre-VE) and late reproductive (R4+) phases &mdash; ' +
-    'NDVI is non-diagnostic in those windows. Decline flags also suppressed R1&ndash;R4 (natural ' +
-    'senescence onset); absolute floors remain active through R4.</em>' +
+    '<em>NDVI alerts are off before emergence and late in the season, when low NDVI is normal. ' +
+    'From silking through dough stage, a falling trend won&rsquo;t trigger an alert &mdash; but a genuinely low reading still will, ' +
+    'since that can mean a real problem like disease.</em>' +
     '</div>';
   d3.select("#legend-risk-tiers").html(html);
 }
