@@ -686,6 +686,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 .header h1 { font-size: 1.4rem; font-weight: 600; }
 .header .subtitle { font-size: 0.85rem; color: #b8d4e8; margin-top: 4px; }
 .header .freshness { font-size: 0.75rem; color: #8899aa; }
+.source-lag { font-size: 0.7rem; color: #99aabb; font-style: italic; }
 .header-subrow { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
 .header .header-filters { display: flex; gap: 14px; align-items: flex-start; flex-shrink: 0; }
 .header .header-filters .filter-group { display: flex; flex-direction: column; gap: 3px; }
@@ -818,13 +819,13 @@ svg.icon-lg { width: 24px; height: 24px; }
         </div>
         <div class="sources-column">
           <h4>Sources</h4>
-          <div><span class="method-label">NDVI:</span> mean per-scene from Sentinel-2/Landsat 8-9 &middot; dashed lines indicate &ge;30-day scene gap</div>
+          <div><span class="method-label">NDVI:</span> mean per-scene from Sentinel-2/Landsat 8-9 <span class="source-lag">(dashed lines &equals; &ge;30-day scene gap)</span></div>
           <div><span class="method-label">GDD:</span> base 50&deg;F from daily Tmin/Tmax</div>
           <div><span class="method-label">Soil:</span> NRCS SSURGO (AWS, OM%)</div>
-          <div><span class="method-label">Weather:</span> NASA POWER daily</div>
+          <div><span class="method-label">Weather:</span> NASA POWER daily <span class="source-lag">(~2mo lag)</span></div>
         </div>
       </div>
-      <div class="header-legend-hint"><em>Click any data point on a chart for details. On the map, clicking a field filters the whole dashboard instead.</em></div>
+      <div class="header-legend-hint"><em><b>Click any data point on a chart for details.</b> On the map, clicking a field filters the whole dashboard instead.</em></div>
     </div>
   </div>
 
@@ -1574,6 +1575,22 @@ function renderKPIs() {
   }
 }
 
+function getWeatherGap(dailyData, chartStart, chartEnd) {
+  var firstNaN = null, lastNaN = null;
+  for (var i = 0; i < dailyData.dates.length; i++) {
+    var d = new Date(dailyData.dates[i]);
+    if (d < chartStart || d > chartEnd) continue;
+    if (isNaN(+dailyData.T2M_MIN[i]) || isNaN(+dailyData.T2M_MAX[i])) {
+      if (!firstNaN) firstNaN = d;
+      lastNaN = d;
+    }
+  }
+  if (firstNaN && lastNaN && (lastNaN - firstNaN) >= 2 * 86400000) {
+    return { start: firstNaN, end: lastNaN };
+  }
+  return null;
+}
+
 // ===== NDVI TIME SERIES =====
 function renderNDVITimeSeries() {
   const container = d3.select("#ndvi-time-series");
@@ -1774,9 +1791,24 @@ function renderNDVITimeSeries() {
           .attr("text-anchor", "end")
           .attr("font-size", "10px")
           .attr("fill", "#E8A838")
-          .text("Watch");
+            .text("Watch");
       }
     }
+  }
+
+  var wgap = getWeatherGap(dailyData, chartStart, chartEnd);
+  if (wgap) {
+    var gx1 = xScale(wgap.start), gx2 = xScale(wgap.end);
+    svg.append("rect")
+      .attr("x", gx1).attr("y", 0)
+      .attr("width", gx2 - gx1).attr("height", height)
+      .attr("fill", "#888").attr("opacity", 0.12)
+      .attr("pointer-events", "none");
+    svg.append("text")
+      .attr("x", (gx1 + gx2) / 2).attr("y", 10)
+      .attr("text-anchor", "middle").attr("font-size", "8px")
+      .attr("font-weight", "600").attr("fill", "#888")
+      .text("Weather gap");
   }
 
   svg.append("g").attr("class", "axis").call(d3.axisLeft(yScale).ticks(6));
@@ -2451,6 +2483,21 @@ function renderGDD() {
       }
     });
   }
+
+  var wgap = getWeatherGap(dailyData, chartStart, chartEnd);
+  if (wgap) {
+    var gx1 = xScale(wgap.start), gx2 = xScale(wgap.end);
+    svg.append("rect")
+      .attr("x", gx1).attr("y", 0)
+      .attr("width", gx2 - gx1).attr("height", height)
+      .attr("fill", "#888").attr("opacity", 0.12)
+      .attr("pointer-events", "none");
+    svg.append("text")
+      .attr("x", (gx1 + gx2) / 2).attr("y", 10)
+      .attr("text-anchor", "middle").attr("font-size", "8px")
+      .attr("font-weight", "600").attr("fill", "#888")
+      .text("Weather gap");
+  }
   }
 }
 
@@ -2807,7 +2854,7 @@ function renderHeaderLegend() {
   var html = "";
   tiers.forEach(function(t) {
     var tl = THRESHOLD_LABELS[t.key];
-    html += '<div class="legend-item"><span class="legend-swatch" style="background:' + tl.color + '"></span>' + tl.label + ' (' + t.desc + ')</div>';
+    html += '<div class="legend-item"><span class="legend-swatch" style="background:' + tl.color + '"></span>' + tl.label + ' - ' + t.desc + '</div>';
   });
   // Growth-phase gating note
   html += '<div style="margin-top:8px; font-size:0.78rem; color:#c8d8e8; line-height:1.4;">' +
