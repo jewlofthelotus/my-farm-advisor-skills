@@ -37,6 +37,10 @@ ${DATA_PIPELINE_DATA_ROOT}/data-pipeline/growers/<grower>/farms/<farm>/derived/d
 
 Open the file directly in any modern browser. No server required.
 
+### Selecting a view
+
+The dashboard defaults to the current growing season (actionable mode: Priority Actions, Fields Requiring Attention, live risk classification). Use the **Year** selector in the header to switch to a past season (reference mode: Season Recap & Notable Events, Peak NDVI, Season Stress Duration) for any year with corn-field data.
+
 ## Where to Look in the Runtime Dataset
 
 | Dashboard Section | Runtime Data Source |
@@ -44,12 +48,14 @@ Open the file directly in any modern browser. No server required.
 | Field boundaries (map) | `growers/<g>/farms/<f>/boundary/field_boundaries.geojson` |
 | Field boundaries (per-field) | `growers/<g>/farms/<f>/fields/<field>/boundary/field_boundary.geojson` |
 | NDVI time series | `growers/<g>/farms/<f>/fields/<field>/satellite/{sentinel,landsat}/<year>/<scene>/*_ndvi.tif` (computed per-scene mean NDVI) |
-| Soil AWC, OM% | `growers/<g>/farms/<f>/fields/<field>/soil/ssurgo_summary.csv` |
+| Soil AWS, OM% | `growers/<g>/farms/<f>/fields/<field>/soil/ssurgo_summary.csv` |
 | Daily weather (temp, precip) | `growers/<g>/farms/<f>/fields/<field>/weather/daily_weather.csv` |
 | Corn/soybean avg NDVI | `growers/<g>/farms/<f>/fields/<field>/derived/summaries/ndvi_card_summary.json` |
 | Crop rotation | `growers/<g>/farms/<f>/derived/tables/*_crop_rotation.csv` |
 | Farm-level weather | `growers/<g>/farms/<f>/derived/tables/*_weather_*.csv` |
 | Farm-level soil | `growers/<g>/farms/<f>/derived/tables/*_ssurgo_summary.csv` |
+
+**Known data limitation:** NASA POWER weather data typically lags 1–2 months behind the current date. The dashboard handles this gracefully (a shaded "Weather gap" region on time-series charts, and GDD/rain KPIs that freeze at the last available reading rather than showing incorrect values) — but it means current-season weather-derived metrics may reflect conditions from several weeks prior, not today.
 
 ## Dependencies
 
@@ -80,4 +86,4 @@ Open it offline with zero external requests.
 
 ## Crop-Type Configuration
 
-Thresholds and definitions live in a `CROP_CONFIG` dictionary keyed by `crop_type`. Currently only `corn` is populated. Adding a `grape` config block later requires no logic changes — only new thresholds, growth-stage labels, and KPI definitions.
+Thresholds and definitions live in a `CROP_CONFIG` dictionary keyed by `crop_type`. Currently only `corn` is populated. Adding additional crop config blocks later requires no logic changes — only new thresholds, growth-stage labels, and KPI definitions.
