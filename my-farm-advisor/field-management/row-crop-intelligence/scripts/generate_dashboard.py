@@ -13,6 +13,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import rasterio
+from rasterio.features import rasterize, shapes
+
+# Management-zone deps are optional: if absent, zone computation is skipped and
+# fields simply render without zones (graceful degradation).
+try:
+    from shapely.geometry import mapping, shape
+    from shapely.ops import unary_union
+    from sklearn.cluster import KMeans
+    _ZONES_AVAILABLE = True
+except ImportError:  # pragma: no cover - environment without sklearn/shapely
+    _ZONES_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Crop-type configuration  (grape-ready: add a "grape" key later)
@@ -165,7 +176,7 @@ def compute_scene_ndvi_time_series(field_dir, data_root):
                 try:
                     with rasterio.open(ndvi_path) as src:
                         data = src.read(1)
-                        valid = data[~np.isnan(data) & (data > -1) & (data < 2)]
+                        valid = data[_valid_ndvi_mask(data)]
                         if len(valid) > 0:
                             mean_val = round(float(np.mean(valid)), 3)
                             series.append({"date": scene_date.isoformat(), "value": mean_val})
@@ -173,6 +184,202 @@ def compute_scene_ndvi_time_series(field_dir, data_root):
                     pass
     series.sort(key=lambda x: x["date"])
     return series
+
+def _valid_ndvi_mask(arr):
+    """Boolean mask of usable NDVI pixels (not nodata/NaN, within valid NDVI range)."""
+    return ~np.isnan(arr) & (arr > -1) & (arr < 2)
+
+def _collect_field_scenes(field_dir, year):
+    """Return [(scene_date, satellite, ndvi_path)] for one field/year."""
+    scenes = []
+    for sat in ("sentinel", "landsat"):
+        year_dir = field_dir / "satellite" / sat / str(year)
+        if not year_dir.is_dir():
+            continue
+        for scene_dir in sorted(year_dir.iterdir()):
+            if not scene_dir.is_dir():
+                continue
+            ndvi_path = scene_dir / "ndvi.tif"
+            if not ndvi_path.exists():
+                ndvi_path = scene_dir / f"{scene_dir.name}_ndvi.tif"
+            if not ndvi_path.exists():
+                continue
+            try:
+                date_str = scene_dir.name.split("_")[-1]
+                scene_date = datetime.strptime(date_str, "%Y%m%d").date()
+            except (ValueError, IndexError):
+                continue
+            scenes.append((scene_date, sat, ndvi_path))
+    return scenes
+
+def _rasterize_field_mask(geom, out_shape, transform):
+    mask = rasterize(
+        [(geom, 1)],
+        out_shape=out_shape,
+        transform=transform,
+        fill=0,
+        all_touched=True,
+        dtype="uint8",
+    ).astype(bool)
+    return mask
+
+def _scene_in_field_stats(ndvi_path, geom):
+    """Valid in-field NDVI fraction and masked mean for a scene. None if unreadable."""
+    try:
+        with rasterio.open(ndvi_path) as src:
+            data = src.read(1)
+            mask = _rasterize_field_mask(geom, data.shape, src.transform)
+            in_field = data[mask]
+            if len(in_field) == 0:
+                return None, None
+            valid = in_field[_valid_ndvi_mask(in_field)]
+            frac = len(valid) / len(in_field)
+            mean = float(np.mean(valid)) if len(valid) else None
+            return frac, mean
+    except Exception:
+        return None, None
+
+def _select_scene_for_zones(field_dir, year, geom, current_year):
+    """Pick the first scene passing the quality gate.
+
+    Pre-sorted by the dashboard convention: most-recent scene first for the current
+    year, peak-NDVI scene first for past years. Returns (raster, transform, mask,
+    mean_ndvi) for the chosen scene, or None when no candidate clears the gate.
+    """
+    candidates = _collect_field_scenes(field_dir, year)
+    if not candidates:
+        return None
+
+    keyed = []
+    for scene_date, sat, path in candidates:
+        frac, mean = _scene_in_field_stats(path, geom)
+        if frac is None or mean is None:
+            continue
+        keyed.append((frac, mean, scene_date, path))
+
+    if year == str(current_year):
+        keyed.sort(key=lambda k: k[2], reverse=True)  # most-recent scene first
+    else:
+        keyed.sort(key=lambda k: k[1], reverse=True)  # peak-NDVI scene first
+
+    for frac, mean, scene_date, path in keyed:
+        if mean is None or frac < 0.90:
+            continue
+        with rasterio.open(path) as src:
+            data = src.read(1)
+            mask = _rasterize_field_mask(geom, data.shape, src.transform)
+            if int(mask.sum()) == 0:
+                continue
+            return data, src.transform, mask, mean
+    return None
+
+def _cluster_ndvi_zones(data, transform, mask):
+    """K-means (k=3) on valid in-field NDVI, then dissolve + simplify.
+
+    Returns zone list sorted low->high by mean NDVI, or None when clustering would
+    be degenerate (too few pixels / too few distinct values).
+    """
+    in_field = data[mask]
+    valid = in_field[_valid_ndvi_mask(in_field)]
+    if len(valid) < 25 or len(np.unique(valid)) < 3:
+        return None
+
+    km = KMeans(n_clusters=3, n_init=10, random_state=0).fit(valid.reshape(-1, 1))
+
+    # Assign cluster labels to their raster cells
+    label_raster = np.full(data.shape, -1, dtype="int32")
+    valid_pos = np.flatnonzero(mask & _valid_ndvi_mask(data))
+    labels = km.predict(valid.reshape(-1, 1))
+    np.put(label_raster, valid_pos, labels)
+
+    polys_by_label = {i: [] for i in range(3)}
+    for polygon, value in shapes(label_raster, mask=(label_raster >= 0), transform=transform):
+        if value >= 0:
+            if isinstance(polygon, dict):
+                polygon = shape(polygon)
+            polys_by_label[int(value)].append(polygon)
+
+    # Dissolve + simplify per cluster; order by mean NDVI ascending.
+    # Tolerance ~1.5 pixels smooths raster stair-stepping without over-rounding shapes.
+    tol = abs(transform.a) * 1.5
+    zones = []
+    for lab in range(3):
+        if not polys_by_label[lab]:
+            continue
+        merged = unary_union([p for p in polys_by_label[lab] if p and not p.is_empty])
+        if merged.is_empty:
+            continue
+        merged = merged.buffer(0)
+        merged = merged.simplify(tol, preserve_topology=True)
+        # Drop sub-0.1-acre slivers so zone outlines read clean rather than speckled
+        if merged.geom_type == "MultiPolygon":
+            parts = [p for p in merged.geoms if _geom_area_acres(p) >= 0.1]
+            if len(parts) < len(list(merged.geoms)):
+                merged = unary_union(parts) if parts else None
+                if merged is None or merged.is_empty:
+                    continue
+        mean_ndvi = float(np.mean(valid[labels == lab])) if len(labels[labels == lab]) else None
+        zones.append({"label": lab, "mean_ndvi": mean_ndvi, "geom": merged})
+
+    zones.sort(key=lambda z: z["mean_ndvi"] or -1)
+    label_names = {0: "low", 1: "medium", 2: "high"}
+    result = []
+    for i, z in enumerate(zones):
+        result.append({
+            "label": label_names[i],
+            "area_acres": round(_geom_area_acres(z["geom"]), 2),
+            "mean_ndvi": round(z["mean_ndvi"], 3) if z["mean_ndvi"] is not None else None,
+            "geometry": _round_coords(mapping(z["geom"])),
+        })
+    return result
+
+def _round_coords(obj, ndigits=6):
+    """Recursively round GeoJSON coordinates (~0.1 m at 6 dp) to keep the dashboard lean."""
+    if isinstance(obj, float):
+        return round(obj, ndigits)
+    if isinstance(obj, (list, tuple)):
+        return [_round_coords(x, ndigits) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _round_coords(v, ndigits) for k, v in obj.items()}
+    return obj
+
+def _geom_area_acres(geom):
+    """Area in acres via US Contiguous Albers Equal Area (EPSG:5070)."""
+    try:
+        import geopandas as gpd
+        if geom.geom_type == "GeometryCollection":
+            geom = geom.buffer(0)
+        return float(gpd.GeoSeries([geom], crs="EPSG:4326").to_crs("EPSG:5070").area[0]) / 4046.8564
+    except Exception:
+        return 0.0
+
+def _normalize_zone_areas(zones, target_acres):
+    """Scale zone areas so they sum to the field's known acreage."""
+    if not zones or not target_acres:
+        return zones
+    total = sum(z["area_acres"] for z in zones)
+    if total <= 0:
+        return zones
+    scale = target_acres / total
+    for z in zones:
+        z["area_acres"] = round(z["area_acres"] * scale, 2)
+    return zones
+
+def compute_field_zones(field_dir, geom, years, current_year, field_acres):
+    """Per-year management zones for a field. Missing years have no entry."""
+    if not _ZONES_AVAILABLE:
+        return {}
+    zones = {}
+    for year in years:
+        selected = _select_scene_for_zones(field_dir, year, geom, current_year)
+        if selected is None:
+            continue
+        data, transform, mask, _mean = selected
+        # TODO: nearest-valid-pixel interpolation for small gaps could go here
+        year_zones = _cluster_ndvi_zones(data, transform, mask)
+        if year_zones:
+            zones[str(year)] = _normalize_zone_areas(year_zones, field_acres)
+    return zones
 
 def compute_gdd(tmin_c, tmax_c):
     """Growing degree days in Fahrenheit (base 50°F)."""
@@ -497,6 +704,13 @@ def extract_field_data(field_dir, farm_root, data_root, current_crop=None, weath
         latest = str(date.today().year)
         current_crop = cdl_crops.get(latest, "Unknown")
 
+    # Management zones (v1): per-year k-means zones from a quality-gated scene.
+    # Years with no passing scene are omitted; JS falls back to the solid boundary.
+    zones = {}
+    if boundary and boundary.get("geometry"):
+        scene_years = sorted(set(s["date"][:4] for s in ndvi_series if len(s["date"]) >= 4))
+        zones = compute_field_zones(field_dir, boundary["geometry"], scene_years, date.today().year, area_acres)
+
     field_data = {
         "id": field_id,
         "name": field_id,
@@ -516,6 +730,7 @@ def extract_field_data(field_dir, farm_root, data_root, current_crop=None, weath
         "weather_series_id": grid_key or field_id,
         "cdl_crops": cdl_crops,
         "current_crop": current_crop,
+        "zones": zones,
         # Growth-stage context (used by JS as initial seed; JS recomputes on filter changes)
         "current_phase": phase,
         "current_stage_label": growth_info["stage_label"],
@@ -892,6 +1107,8 @@ __D3_MIN_JS__
 const CROP_CONFIG = __CROP_CONFIG_JSON__;
 const CONFIG = CROP_CONFIG.corn;
 const THRESHOLD_LABELS = __THRESHOLD_LABELS_JSON__;
+const ZONE_COLORS = { low: "#C96A2B", medium: "#E3C04A", high: "#4E9A6A" };
+const ZONE_LABELS = { low: "Low NDVI", medium: "Medium NDVI", high: "High NDVI" };
 const ALL_FIELDS = __FIELDS_JSON__;
 const WEATHER_SERIES = __WEATHER_SERIES_JSON__;
 
@@ -2132,6 +2349,35 @@ function renderNDVIvsAWC() {
 }
 
 // ===== MAP =====
+function fieldHasRenderedZones(fieldId) {
+  var year = state.filters.selectedYear;
+  var f = ALL_FIELDS.find(function(fi) { return fi.id === fieldId; });
+  return !!(f && isFieldCorn(f, year) && f.zones && f.zones[year] && f.zones[year].length);
+}
+
+function renderMapLegend() {
+  var selectedIds = state.filters.fieldIds;
+  var showingZones = selectedIds.length === 1 && fieldHasRenderedZones(selectedIds[0]);
+  var legendEl = document.getElementById("map-legend");
+  legendEl.innerHTML = "";
+  if (showingZones) {
+    ["low", "medium", "high"].forEach(function(t) {
+      var item = document.createElement("span");
+      item.className = "legend-item";
+      item.innerHTML = '<span class="legend-swatch" style="background:' + ZONE_COLORS[t] + '"></span>' + ZONE_LABELS[t];
+      legendEl.appendChild(item);
+    });
+  } else {
+    ["healthy", "watch", "critical"].forEach(function(t) {
+      var tl = THRESHOLD_LABELS[t];
+      var item = document.createElement("span");
+      item.className = "legend-item";
+      item.innerHTML = '<span class="legend-swatch" style="background:' + tl.color + '"></span>' + tl.label;
+      legendEl.appendChild(item);
+    });
+  }
+}
+
 function renderMap() {
   var container = d3.select("#field-map");
   container.html("");
@@ -2196,6 +2442,8 @@ function renderMap() {
     return minR + t * (maxR - minR);
   }
 
+  // Zone polygons replace the risk fill only when zoomed to a single field with zones
+
   // Draw fields — use markers for tiny polygons, true polygons otherwise
   allCornFields.forEach(function(f) {
     var visible = selectedIds.length === 0 || selectedIds.includes(f.id);
@@ -2224,12 +2472,39 @@ function renderMap() {
         .attr("opacity", visible ? 0.9 : 0.3)
         .style("cursor", visible ? "pointer" : "default");
     } else {
+      var fieldZones = (selectedIds.length === 1 && f.zones && f.zones[year]) ? f.zones[year] : null;
+      var hasZones = !!fieldZones && fieldZones.length > 0;
+      var riskColor = THRESHOLD_LABELS[fieldRisk]?.color || "#fff";
+      // Zone fills render beneath the boundary path so the risk-tier stroke stays on top
+      if (hasZones) {
+        fieldZones.forEach(function(z) {
+          var zp = mapGroup.append("path")
+            .datum(z.geometry)
+            .attr("d", geoPath)
+            .attr("fill", ZONE_COLORS[z.label] || "#999")
+            .attr("stroke", "#fff")
+            .attr("stroke-width", 0.5)
+            .attr("opacity", 0.95);
+          zp.on("mouseenter", function(event) {
+            showTooltip(
+              '<strong>' + fieldName + '</strong><br>' + (ZONE_LABELS[z.label] || 'NDVI zone') +
+              '<br>Area: ' + (z.area_acres != null ? z.area_acres.toFixed(2) : '--') + ' acres' +
+              '<br>Mean NDVI: ' + (z.mean_ndvi != null ? z.mean_ndvi.toFixed(3) : '--'),
+              event.pageX, event.pageY
+            );
+          }).on("mouseleave", hideTooltip);
+          zp.on("click", function() {
+            state.filters.fieldIds = [];
+            syncFilters();
+          });
+        });
+      }
       fp = mapGroup.append("path")
         .datum(f.geometry.geometry)
         .attr("d", geoPath)
-        .attr("fill", fillColor)
-        .attr("stroke", visible ? "#fff" : "none")
-        .attr("stroke-width", visible ? 1.5 : 0)
+        .attr("fill", hasZones ? "none" : fillColor)
+        .attr("stroke", visible ? (hasZones ? riskColor : "#fff") : "none")
+        .attr("stroke-width", visible ? (hasZones ? 2.5 : 1.5) : 0)
         .attr("opacity", visible ? 0.9 : 0.3)
         .style("cursor", visible ? "pointer" : "default");
     }
@@ -2264,16 +2539,9 @@ function renderMap() {
     });
   svg.call(zoom);
 
-  // HTML legend
-  var legendEl = document.getElementById("map-legend");
-  legendEl.innerHTML = "";
-  ["healthy", "watch", "critical"].forEach(function(t) {
-    var tl = THRESHOLD_LABELS[t];
-    var item = document.createElement("span");
-    item.className = "legend-item";
-    item.innerHTML = '<span class="legend-swatch" style="background:' + tl.color + '"></span>' + tl.label;
-    legendEl.appendChild(item);
-  });
+  // Legend reflects what actually rendered: zone legend when zoomed to a field with
+  // zones, risk legend otherwise
+  renderMapLegend();
 
   document.getElementById("map-zoom-in").addEventListener("click", function() {
     svg.transition().duration(300).call(zoom.scaleBy, 1.5);

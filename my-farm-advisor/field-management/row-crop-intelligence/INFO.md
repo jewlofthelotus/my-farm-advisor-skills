@@ -87,7 +87,7 @@ Crop identity rotates year to year for most fields — see Crop Rotation below. 
    - **Current-season:** ranked, field-specific action list (e.g., "Monitor weekly. Low AWS raises drought sensitivity. Extended dry period. Check soil moisture and NDVI trend next week.")
    - **Reference:** season recap ranked by stress duration, with a notable-event callout when detected — a sharp NDVI drop correlated with either a dry spell or a temperature extreme, tagged with the growth stage it occurred in (e.g., "Sharp NDVI drop Oct 2–Nov 11, coinciding with a 14-day dry spell during R6+ (maturation).")
 
-3. **Field Risk Map** — D3 choropleth of field boundaries (or markers for polygons too small to render legibly; markers scale with field area), colored by risk tier. Hovering a field shows a tooltip with its name, NDVI, size in acres, and risk tier (no permanent on-map labels). Click a field to filter the whole dashboard and zoom to that field's boundary; clicking it again (or the ✕ in the header) clears the filter and returns to the full grower view.
+3. **Field Risk Map** — D3 choropleth of field boundaries (or markers for polygons too small to render legibly; markers scale with field area), colored by risk tier. Hovering a field shows a tooltip with its name, NDVI, size in acres, and risk tier (no permanent on-map labels). Click a field to filter the whole dashboard and zoom to that field's boundary; clicking it again (or the ✕ in the header) clears the filter and returns to the full grower view. **When zoomed to a single field, in-field management zones (Low/Medium/High NDVI, k=3) replace the solid fill where a valid scene exists** — see Management Zones below.
 
 4. **NDVI Time Series** — one line per field, with:
    - Growth-stage annotations (Planting, VE, V6, VT, R1–R6) positioned by actual accumulated GDD
@@ -139,6 +139,15 @@ Corn phenology is tracked via accumulated GDD (base 50°F) against standard grow
 - **Healthy threshold scaling:** before VT, the Healthy cutoff (normally 0.7) scales from 30% of that value near planting up to the full 0.7 at VT, since full canopy closure isn't physically achievable earlier in the season. From VT onward the threshold is flat at 0.7.
 
 Thresholds and the growth-stage boundary GDD values are derived from the `CROP_CONFIG` block and can be adjusted per crop type.
+
+### Management Zones (v1)
+
+Within-field NDVI variability is surfaced as three management zones (Low / Medium / High NDVI), rendered as dissolved polygon fills when a field is zoomed in on the map. Computed at generation time from satellite scenes; embedded in each field's data.
+
+- **Scene selection with a quality gate** — for each field and year, one scene is chosen using the dashboard's existing convention (most-recent scene for the current year, peak-NDVI scene for past years), but only accepted when ≥90% of in-field pixels are usable (not cloud/shadow/nodata). If no scene clears the gate, the field simply keeps its solid risk-tier boundary — zones are never forced from a contaminated scene.
+- **Clustering** — k-means (k=3) on valid in-field NDVI pixels; clusters ordered low → high by mean NDVI.
+- **Dissolve & simplify** — clustered pixels become polygons, dissolved by cluster, then simplified for a clean outline (sub-0.1-acre slivers dropped). Per-zone area (acres) and mean NDVI appear in a hover tooltip; a Low/Medium/High legend replaces the risk legend while zoomed.
+- **Deliberately out of scope for v1** — multi-criteria scene scoring, timing-window / within-field-diversity checks, and nearest-valid-pixel gap-fill interpolation. These are structured as seams for the full pipeline: `_select_scene_for_zones()` is an isolated gate whose single threshold can be replaced by a full scorer; its sort key (most-recent / peak-NDVI) can be swapped for a scoring funnel's ranked output; and gap-fill interpolation slots in between scene selection and clustering (marked by a `TODO` in `compute_field_zones`).
 
 ### Assumptions & Limitations
 
