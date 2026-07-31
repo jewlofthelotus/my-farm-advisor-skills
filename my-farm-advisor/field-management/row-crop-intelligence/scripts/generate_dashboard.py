@@ -1109,6 +1109,8 @@ const CONFIG = CROP_CONFIG.corn;
 const THRESHOLD_LABELS = __THRESHOLD_LABELS_JSON__;
 const ZONE_COLORS = { low: "#C96A2B", medium: "#E3C04A", high: "#4E9A6A" };
 const ZONE_LABELS = { low: "Low NDVI", medium: "Medium NDVI", high: "High NDVI" };
+// Reference mode relabels the same three palette colors by season-stress tier
+const SEASON_TIER_LABELS = { critical: "High Stress", watch: "Moderate Stress", healthy: "Strong Season" };
 const ALL_FIELDS = __FIELDS_JSON__;
 const WEATHER_SERIES = __WEATHER_SERIES_JSON__;
 
@@ -1402,21 +1404,81 @@ function getChartDateExtent(ff, year) {
   return [minD, maxD];
 }
 
-function computeStressDuration(ndviSeries, config) {
+function buildDailyGDDLookup(weatherData, config) {
+  var lookup = {};
+  if (!weatherData || !weatherData.dates || !weatherData.dates.length) return lookup;
+  var displayYear = weatherData.dates[0].slice(0, 4);
+  var plantingDate = getPlantingDate(weatherData, displayYear);
+  var gddBaseF = config.gdd_base_temp_f || 50.0;
+  var cumGDD = 0;
+  for (var j = 0; j < weatherData.dates.length; j++) {
+    var dj = new Date(weatherData.dates[j]);
+    if (plantingDate && dj < plantingDate) {
+      lookup[weatherData.dates[j]] = 0;
+      continue;
+    }
+    var tmx = +weatherData.T2M_MAX[j], tmn = +weatherData.T2M_MIN[j];
+    if (!isNaN(tmx) && !isNaN(tmn)) {
+      var avgF = (tmn + tmx) / 2 * 9 / 5 + 32;
+      cumGDD += Math.max(0, avgF - gddBaseF);
+    }
+    lookup[weatherData.dates[j]] = Math.round(cumGDD * 10) / 10;
+  }
+  return lookup;
+}
+
+// Season-stress tier — single source of truth for reference-mode map colors and
+// Season Recap badges. Thresholds match the existing badge logic (>30% High,
+// >=10% Moderate, else Strong).
+function seasonStressTier(stressDays, seasonLengthDays) {
+  var pct = seasonLengthDays > 0 ? stressDays / seasonLengthDays : 0;
+  if (pct > 0.30) return 'critical';
+  if (pct >= 0.10) return 'watch';
+  return 'healthy';
+}
+
+function computeStressDuration(ndviSeries, config, dailyGDDLookup) {
   if (!ndviSeries || ndviSeries.length < 2) return 0;
+  var stages = config.growth_stages;
   var total = 0, inStress = false, start = null;
-  ndviSeries.forEach(function(d) {
-    var stressed = d.value < config.watch_threshold;
-    if (stressed && !inStress) { start = d.date; inStress = true; }
-    else if (!stressed && inStress) {
-      total += Math.round((new Date(d.date) - new Date(start)) / 86400000);
+  dailyGDDLookup = dailyGDDLookup || {};
+
+  function daysBetween(a, b) {
+    return Math.round((new Date(b) - new Date(a)) / 86400000);
+  }
+
+  // Phase gating mirrors classifyRisk(): establishing and reproductive_late (R4+)
+  // are not diagnostic, so they neither start nor accumulate stress days.
+  function phaseForGDD(gdd) {
+    if (gdd == null) return 'building'; // fallback if a date has no matching weather
+    if (gdd < stages.VE) return 'establishing';
+    if (gdd < stages.R4) return 'active'; // building or reproductive_early — both counted
+    return 'reproductive_late';
+  }
+
+  function closeOutIfOpen(endDate) {
+    if (inStress) {
+      total += daysBetween(start, endDate);
       inStress = false;
     }
-  });
-  if (inStress && start) {
-    var last = ndviSeries[ndviSeries.length - 1].date;
-    total += Math.round((new Date(last) - new Date(start)) / 86400000);
   }
+
+  ndviSeries.forEach(function(d) {
+    var gdd = dailyGDDLookup[d.date] != null ? dailyGDDLookup[d.date] : null;
+    var phase = phaseForGDD(gdd);
+
+    if (phase !== 'active') {
+      closeOutIfOpen(d.date); // suppressed phase — close any open window, don't count this day
+      return;
+    }
+
+    var threshold = healthyThresholdForStage(gdd, config); // scaled pre-VT, flat 0.7 from VT on
+    var stressed = d.value < threshold;
+    if (stressed && !inStress) { start = d.date; inStress = true; }
+    else if (!stressed && inStress) { closeOutIfOpen(d.date); }
+  });
+
+  closeOutIfOpen(ndviSeries[ndviSeries.length - 1].date);
   return total;
 }
 
@@ -1644,6 +1706,16 @@ const state = {
       var lastNDVI = ndviSeries.length ? ndviSeries[ndviSeries.length - 1].value : null;
       var peakNDVI = ndviSeries.length ? d3.max(ndviSeries, function(d) { return d.value; }) : null;
       var weatherSumm = computeWeatherSummaries(weatherData, CONFIG);
+
+      // Reference-mode season stress (phase-gated, scaled threshold) — computed once
+      // here so the map, Season Recap badges, KPI, and scatter all read one value.
+      var seasonStressDays = null;
+      var seasonLengthDays = null;
+      if (year !== String(new Date().getFullYear()) && ndviSeries.length >= 2) {
+        seasonStressDays = computeStressDuration(ndviSeries, CONFIG, buildDailyGDDLookup(weatherData, CONFIG));
+        seasonLengthDays = Math.round((new Date(ndviSeries[ndviSeries.length - 1].date) - new Date(ndviSeries[0].date)) / 86400000) || 90;
+      }
+
       return Object.assign({}, f, {
         current_ndvi: lastNDVI,
         display_ndvi: year === String(new Date().getFullYear()) ? lastNDVI : peakNDVI,
@@ -1657,6 +1729,9 @@ const state = {
         current_stage_label: fieldPhaseInfo.stageLabel,
         stage_description: fieldPhaseInfo.stageDescription,
         cum_gdd_f: fieldPhaseInfo.cumGDD,
+        // Reference-mode season stress (null in actionable mode)
+        season_stress_days: seasonStressDays,
+        season_length_days: seasonLengthDays,
       });
     });
   },
@@ -1806,14 +1881,14 @@ function renderKPIs() {
     const precipVals = ff.map(f => f.weather_summary?.total_precip_mm || 0);
     const avgPrecipIn = precipVals.length ? (precipVals.reduce((a,b) => a+b, 0) / precipVals.length / 25.4).toFixed(1) : '--';
 
-    const stressVals = ff.map(function(f) { return computeStressDuration(f.ndvi_series, CONFIG); });
+    const stressVals = ff.map(function(f) { return f.season_stress_days || 0; });
     const avgStress = stressVals.length ? Math.round(stressVals.reduce(function(a,b) { return a+b; }, 0) / stressVals.length) : 0;
 
     d3.select("#kpi-row").html(
       '<div class="kpi-card headline ' + (avgStress > 14 ? 'watch' : 'healthy') + '">' +
         '<div class="kpi-label">' + ICONS.warning + ' Season Stress Duration (avg)</div>' +
         '<div class="kpi-value">' + avgStress + ' <span class="kpi-unit">days</span></div>' +
-        '<div class="kpi-trend">Avg days in Watch/Critical</div>' +
+        '<div class="kpi-trend">Avg days below NDVI threshold (VE-R4)</div>' +
       '</div>' +
       '<div class="kpi-card healthy">' +
         '<div class="kpi-label">' + ICONS.plant + ' Peak NDVI (avg)</div>' +
@@ -2283,7 +2358,7 @@ function renderNDVIvsAWC() {
   var stressDaysByField = {};
   if (!isCurrent) {
     ff.forEach(function(f) {
-      stressDaysByField[f.id] = computeStressDuration(f.ndvi_series, CONFIG);
+      stressDaysByField[f.id] = f.season_stress_days || 0;
     });
     var stressVals = ff.map(function(f) { return stressDaysByField[f.id]; });
     var maxStress = d3.max(stressVals) || 0;
@@ -2357,6 +2432,7 @@ function fieldHasRenderedZones(fieldId) {
 
 function renderMapLegend() {
   var selectedIds = state.filters.fieldIds;
+  var isCurrent = state.filters.selectedYear === String(new Date().getFullYear());
   var showingZones = selectedIds.length === 1 && fieldHasRenderedZones(selectedIds[0]);
   var legendEl = document.getElementById("map-legend");
   legendEl.innerHTML = "";
@@ -2370,9 +2446,10 @@ function renderMapLegend() {
   } else {
     ["healthy", "watch", "critical"].forEach(function(t) {
       var tl = THRESHOLD_LABELS[t];
+      var label = isCurrent ? tl.label : SEASON_TIER_LABELS[t];
       var item = document.createElement("span");
       item.className = "legend-item";
-      item.innerHTML = '<span class="legend-swatch" style="background:' + tl.color + '"></span>' + tl.label;
+      item.innerHTML = '<span class="legend-swatch" style="background:' + tl.color + '"></span>' + label;
       legendEl.appendChild(item);
     });
   }
@@ -2386,6 +2463,7 @@ function renderMap() {
 
   var year = state.filters.selectedYear;
   var selectedIds = state.filters.fieldIds;
+  var isCurrent = year === String(new Date().getFullYear());
 
   var allCornFields = ALL_FIELDS.filter(function(f) { return isFieldCorn(f, year) && f.geometry?.geometry; });
   if (!allCornFields.length) return;
@@ -2450,7 +2528,13 @@ function renderMap() {
     var dynamic = ffMap[f.id];
     var fieldRisk = dynamic ? dynamic.current_risk : f.current_risk;
     var fieldNdvi = dynamic ? dynamic.display_ndvi : f.current_ndvi;
-    var fillColor = visible ? (THRESHOLD_LABELS[fieldRisk]?.color || "#999") : "#e0e0e0";
+    // Mode-aware tier: actionable uses classifyRisk, reference uses season-stress tier
+    var tierKey = isCurrent
+      ? fieldRisk
+      : (dynamic && dynamic.season_stress_days != null
+          ? seasonStressTier(dynamic.season_stress_days, dynamic.season_length_days)
+          : 'healthy');
+    var fillColor = visible ? (THRESHOLD_LABELS[tierKey]?.color || "#999") : "#e0e0e0";
     var fieldName = f.name, fieldAcres = f.area_acres;
     var fieldId = f.id;
     var centroid = geoPath.centroid(f.geometry.geometry);
@@ -2474,7 +2558,7 @@ function renderMap() {
     } else {
       var fieldZones = (selectedIds.length === 1 && f.zones && f.zones[year]) ? f.zones[year] : null;
       var hasZones = !!fieldZones && fieldZones.length > 0;
-      var riskColor = THRESHOLD_LABELS[fieldRisk]?.color || "#fff";
+      var riskColor = THRESHOLD_LABELS[tierKey]?.color || "#fff";
       // Zone fills render beneath the boundary path so the risk-tier stroke stays on top
       if (hasZones) {
         fieldZones.forEach(function(z) {
@@ -2513,10 +2597,13 @@ function renderMap() {
 
     // Hover tooltip — name, NDVI, and risk tier (replaces permanent on-map labels)
     fp.on("mouseenter", function(event) {
+      var tierText = isCurrent
+        ? (THRESHOLD_LABELS[fieldRisk]?.label || fieldRisk || 'Unknown')
+        : (SEASON_TIER_LABELS[tierKey] || tierKey);
       showTooltip(
         '<strong>' + fieldName + '</strong><br>NDVI: ' + (fieldNdvi != null ? fieldNdvi.toFixed(2) : '--') +
         '<br>Size: ' + (fieldAcres != null ? fieldAcres.toFixed(1) : '--') + ' acres' +
-        '<br>Risk: ' + (THRESHOLD_LABELS[fieldRisk]?.label || fieldRisk || 'Unknown'),
+        '<br>' + (isCurrent ? 'Risk' : 'Season') + ': ' + tierText,
         event.pageX, event.pageY
       );
     }).on("mouseleave", hideTooltip);
@@ -2935,8 +3022,8 @@ function renderSeasonRecap() {
   });
 
   ff.sort(function(a, b) {
-    var stressA = computeStressDuration(a.ndvi_series, CONFIG);
-    var stressB = computeStressDuration(b.ndvi_series, CONFIG);
+    var stressA = a.season_stress_days || 0;
+    var stressB = b.season_stress_days || 0;
     if (stressB !== stressA) return stressB - stressA;
     return (b.current_ndvi || 0) - (a.current_ndvi || 0);
   });
@@ -2946,21 +3033,11 @@ function renderSeasonRecap() {
     var series = f.ndvi_series;
     if (!series || series.length < 2) return;
 
-    var totalSeasonDays = Math.round((new Date(series[series.length - 1].date) - new Date(series[0].date)) / 86400000) || 90;
-    var stressDays = computeStressDuration(series, CONFIG);
-    var stressPct = totalSeasonDays > 0 ? stressDays / totalSeasonDays : 0;
-
-    var badgeLabel, badgeColor;
-    if (stressPct > 0.30) {
-      badgeLabel = 'High Stress';
-      badgeColor = THRESHOLD_LABELS.critical.color;
-    } else if (stressPct >= 0.10) {
-      badgeLabel = 'Moderate Stress';
-      badgeColor = THRESHOLD_LABELS.watch.color;
-    } else {
-      badgeLabel = 'Strong Season';
-      badgeColor = THRESHOLD_LABELS.healthy.color;
-    }
+    var stressDays = f.season_stress_days || 0;
+    var totalSeasonDays = f.season_length_days || 90;
+    var tier = seasonStressTier(stressDays, totalSeasonDays);
+    var badgeLabel = SEASON_TIER_LABELS[tier];
+    var badgeColor = THRESHOLD_LABELS[tier].color;
 
     var peakNDVI = d3.max(series, function(d) { return d.value; });
     var peakDate = '';
@@ -2981,7 +3058,7 @@ function renderSeasonRecap() {
       '<span class="risk-badge" style="background:' + badgeColor + '">' + badgeLabel + '</span>' +
       '<span class="risk-text">' +
         '<strong>' + f.name + '</strong><br>' +
-        '<span style="color:#777; font-size:0.8rem;">Reached peak NDVI of ' + (peakNDVI != null ? peakNDVI.toFixed(2) : '--') + (peakDate ? ' in ' + peakDate : '') + ' &middot; ' + stressDays + ' days in Watch/Critical this season</span>' +
+        '<span style="color:#777; font-size:0.8rem;">Reached peak NDVI of ' + (peakNDVI != null ? peakNDVI.toFixed(2) : '--') + (peakDate ? ' in ' + peakDate : '') + ' &middot; ' + stressDays + ' days below threshold this season</span>' +
         (eventLine ? '<br><span style="color:#777; font-size:0.8rem;">' + eventLine + '</span>' : '') +
       '</span>' +
     '</div>';
@@ -3026,7 +3103,7 @@ function renderNarrative() {
   if (!isCurrent) {
     ff.forEach(function(f) {
       if (f.ndvi_series && f.ndvi_series.length >= 2 && f.soil?.awc_in_in != null) {
-        refStressVals.push(computeStressDuration(f.ndvi_series, CONFIG));
+        refStressVals.push(f.season_stress_days || 0);
         refAwsVals.push(f.soil.awc_in_in);
       }
     });
