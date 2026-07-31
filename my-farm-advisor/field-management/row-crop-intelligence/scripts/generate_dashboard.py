@@ -1502,6 +1502,10 @@ function showTooltip(html, pageX, pageY) {
   tooltip.style("left", left + "px").style("top", top + "px");
 }
 
+function hideTooltip() {
+  tooltip.classed("visible", false);
+}
+
 // ===== KPI RENDER =====
 function renderKPIs() {
   const ff = state.getFilteredFields();
@@ -2158,21 +2162,39 @@ function renderMap() {
 
   var mapGroup = svg.append("g").attr("class", "map-group");
 
-  // Projection from ALL corn fields (fixed) with proportional padding
+  // Projection source follows the filter: single selected field zooms to its boundary,
+  // otherwise the full grower view. Defensive fallback keeps fitExtent non-empty.
+  var geoSource = selectedIds.length === 1
+    ? allCornFields.filter(function(f) { return f.id === selectedIds[0]; })
+    : allCornFields;
+  if (!geoSource.length) geoSource = allCornFields;
+
   var geoCollection = {
     type: "FeatureCollection",
-    features: allCornFields.map(function(f) {
+    features: geoSource.map(function(f) {
       return { type: "Feature", geometry: f.geometry.geometry, properties: {} };
     })
   };
 
-  var pad = Math.min(width, height) * 0.12;
+  // Generous padding for the single-field zoom so the boundary doesn't touch edges
+  var pad = Math.min(width, height) * (selectedIds.length === 1 ? 0.20 : 0.12);
   var projection = d3.geoMercator()
     .fitExtent([[pad, pad], [width - pad, height - pad]], geoCollection);
   var geoPath = d3.geoPath().projection(projection);
 
-  // Collect label positions for collision avoidance
-  var labelData = [];
+  // Marker radius scales with field area (sqrt: visual area ∝ acres), clamped.
+  var minR = 5, maxR = 22;
+  var aMin = Infinity, aMax = -Infinity;
+  allCornFields.forEach(function(f) {
+    var a = f.area_acres;
+    if (a < aMin) aMin = a;
+    if (a > aMax) aMax = a;
+  });
+  function markerRadius(acres) {
+    if (aMax === aMin) return (minR + maxR) / 2;
+    var t = Math.sqrt(Math.max(0, acres - aMin)) / Math.sqrt(aMax - aMin);
+    return minR + t * (maxR - minR);
+  }
 
   // Draw fields — use markers for tiny polygons, true polygons otherwise
   allCornFields.forEach(function(f) {
@@ -2195,7 +2217,7 @@ function renderMap() {
     if (useMarker) {
       fp = mapGroup.append("circle")
         .attr("cx", centroid[0]).attr("cy", centroid[1])
-        .attr("r", 7)
+        .attr("r", markerRadius(fieldAcres))
         .attr("fill", fillColor)
         .attr("stroke", visible ? "#fff" : "none")
         .attr("stroke-width", visible ? 2 : 0)
@@ -2214,6 +2236,16 @@ function renderMap() {
 
     if (!visible) return;
 
+    // Hover tooltip — name, NDVI, and risk tier (replaces permanent on-map labels)
+    fp.on("mouseenter", function(event) {
+      showTooltip(
+        '<strong>' + fieldName + '</strong><br>NDVI: ' + (fieldNdvi != null ? fieldNdvi.toFixed(2) : '--') +
+        '<br>Size: ' + (fieldAcres != null ? fieldAcres.toFixed(1) : '--') + ' acres' +
+        '<br>Risk: ' + (THRESHOLD_LABELS[fieldRisk]?.label || fieldRisk || 'Unknown'),
+        event.pageX, event.pageY
+      );
+    }).on("mouseleave", hideTooltip);
+
     fp.on("click", function() {
       if (state.filters.fieldIds.length === 1 && state.filters.fieldIds[0] === fieldId) {
         state.filters.fieldIds = []; // clicking the already-selected field clears it
@@ -2222,65 +2254,6 @@ function renderMap() {
       }
       syncFilters();
     });
-
-    labelData.push({ f: f, cx: centroid[0], cy: centroid[1], ndvi: fieldNdvi });
-  });
-
-  // Collision avoidance — AABB test on estimated label extents, settled-state.
-  // Label text is "Field N (0.NN)" — ~6px per character at 10px bold is conservative.
-  var CHAR_W = 6, LINE_H = 16;
-  function labelWidth(ld) {
-    var txt = ld.f.name + ' (' + (ld.ndvi != null ? ld.ndvi.toFixed(2) : '--') + ')';
-    return txt.length * CHAR_W;
-  }
-  for (var i = 0; i < labelData.length; i++) labelData[i].oy = 0;
-  // Iterate until no new offsets are applied (or safety cap of 20 passes)
-  var changed = true, pass = 0;
-  while (changed && pass++ < 20) {
-    changed = false;
-    for (var i = 0; i < labelData.length; i++) {
-      for (var j = 0; j < i; j++) {
-        var dx  = Math.abs(labelData[i].cx - labelData[j].cx);
-        var dy  = Math.abs((labelData[i].cy + labelData[i].oy) - (labelData[j].cy + labelData[j].oy));
-        var hw  = (labelWidth(labelData[i]) + labelWidth(labelData[j])) / 2;
-        if (dx < hw && dy < LINE_H) {
-          labelData[i].oy += LINE_H;
-          changed = true;
-        }
-      }
-    }
-  }
-
-  // Render labels with collision offsets
-  labelData.forEach(function(ld) {
-    var labelY = ld.cy + (ld.oy || 0);
-    if (ld.oy && ld.oy !== 0) {
-      mapGroup.append("line")
-        .attr("x1", ld.cx).attr("y1", ld.cy)
-        .attr("x2", ld.cx).attr("y2", labelY - 4)
-        .attr("stroke", "#999").attr("stroke-width", 1).attr("stroke-dasharray", "2,2");
-    }
-    // Anchor flip: if label would extend past SVG edge, render inward instead
-    var halfW = labelWidth(ld) / 2;
-    var anchor = "middle";
-    if (ld.cx - halfW < 0) {
-      anchor = "start";
-    } else if (ld.cx + halfW > width) {
-      anchor = "end";
-    }
-    mapGroup.append("text")
-      .attr("x", ld.cx)
-      .attr("y", labelY)
-      .attr("text-anchor", anchor)
-      .attr("dy", "0.35em")
-      .attr("font-size", "10px")
-      .attr("font-weight", "600")
-      .attr("fill", "#fff")
-      .attr("paint-order", "stroke")
-      .attr("stroke", "#333")
-      .attr("stroke-width", "2px")
-      .style("pointer-events", "none")
-      .text(ld.f.name + " (" + (ld.ndvi != null ? ld.ndvi.toFixed(2) : '--') + ")");
   });
 
   // Zoom behavior

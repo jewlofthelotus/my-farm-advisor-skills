@@ -87,7 +87,7 @@ Crop identity rotates year to year for most fields — see Crop Rotation below. 
    - **Current-season:** ranked, field-specific action list (e.g., "Monitor weekly. Low AWS raises drought sensitivity. Extended dry period. Check soil moisture and NDVI trend next week.")
    - **Reference:** season recap ranked by stress duration, with a notable-event callout when detected — a sharp NDVI drop correlated with either a dry spell or a temperature extreme, tagged with the growth stage it occurred in (e.g., "Sharp NDVI drop Oct 2–Nov 11, coinciding with a 14-day dry spell during R6+ (maturation).")
 
-3. **Field Risk Map** — D3 choropleth of field boundaries (or minimum-size markers for polygons too small to render legibly), colored by risk tier, with collision-avoided labels and leader lines for offset labels. Click a field to filter the whole dashboard. Clicking it again (or the ✕ in the header) clears the filter.
+3. **Field Risk Map** — D3 choropleth of field boundaries (or markers for polygons too small to render legibly; markers scale with field area), colored by risk tier. Hovering a field shows a tooltip with its name, NDVI, size in acres, and risk tier (no permanent on-map labels). Click a field to filter the whole dashboard and zoom to that field's boundary; clicking it again (or the ✕ in the header) clears the filter and returns to the full grower view.
 
 4. **NDVI Time Series** — one line per field, with:
    - Growth-stage annotations (Planting, VE, V6, VT, R1–R6) positioned by actual accumulated GDD
