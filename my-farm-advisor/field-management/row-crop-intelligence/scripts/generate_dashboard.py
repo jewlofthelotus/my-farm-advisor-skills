@@ -965,7 +965,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 .action-list h3 { font-size: 0.95rem; font-weight: 600; margin-bottom: 10px; color: #333; }
 .action-item { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid #eee; align-items: flex-start; }
 .action-item:last-child { border-bottom: none; }
-.action-item .risk-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.7rem; font-weight: 700; color: #fff; white-space: nowrap; }
+.action-item .risk-badge { display: inline-block; flex: 0 0 115px; text-align: center; padding: 2px 8px; border-radius: 3px; font-size: 0.7rem; font-weight: 700; color: #fff; white-space: nowrap; }
 .action-item .risk-text { flex: 1; font-size: 0.85rem; }
 
 .narrative { background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 16px; }
@@ -1436,6 +1436,37 @@ function seasonStressTier(stressDays, seasonLengthDays) {
   if (pct >= 0.10) return 'watch';
   return 'healthy';
 }
+
+// Which tier colors a field: classifyRisk in actionable mode, season-stress tier in
+// reference mode. Used by the map, Field Ranking, scatter, and Soil OM chart so a
+// field's color agrees everywhere on the page.
+function fieldTierKey(field, isCurrent) {
+  if (isCurrent) return field.current_risk || 'healthy';
+  if (field.season_stress_days != null) return seasonStressTier(field.season_stress_days, field.season_length_days);
+  return 'healthy';
+}
+
+function tierTooltipLine(field, isCurrent) {
+  var tk = fieldTierKey(field, isCurrent);
+  return isCurrent
+    ? 'Risk: ' + (THRESHOLD_LABELS[tk]?.label || tk)
+    : 'Season: ' + (SEASON_TIER_LABELS[tk] || tk);
+}
+
+// Per-field timeseries line colors — deliberately free of blue/amber/red so lines
+// can't be confused with tier colors or the Watch/Stress reference lines.
+const FIELD_LINE_COLORS = [
+  '#7C3AED', // violet
+  '#0D9488', // teal
+  '#DB2777', // magenta
+  '#65A30D', // olive green
+  '#78716C', // warm gray
+  '#4C1D95', // deep indigo
+  '#059669', // jade green
+  '#F472B6', // rose pink
+  '#2DD4BF', // seafoam
+  '#44403C', // charcoal
+];
 
 function computeStressDuration(ndviSeries, config, dailyGDDLookup) {
   if (!ndviSeries || ndviSeries.length < 2) return 0;
@@ -1979,7 +2010,7 @@ function renderNDVITimeSeries() {
   const xScale = d3.scaleTime().domain(xExtent).range([0, width]);
   const yScale = d3.scaleLinear().domain(yExtent).range([height, 0]);
 
-  const colorScale = d3.scaleOrdinal(d3.schemeTableau10).domain(ff.map(f => f.id));
+  const colorScale = d3.scaleOrdinal(FIELD_LINE_COLORS).domain(ff.map(f => f.id));
 
   svg.append("line")
     .attr("x1", 0).attr("x2", width)
@@ -2298,8 +2329,8 @@ function renderFieldRanking() {
 
   ff.forEach(f => {
     var ndviVal = isCurrent ? f.current_ndvi : f.peak_ndvi;
-    const color = THRESHOLD_LABELS[f.current_risk]?.color || "#999";
-    const barTip = "<strong>" + f.name + "</strong><br>NDVI: " + ndviVal.toFixed(3) + "<br>Risk: " + f.current_risk;
+    const color = THRESHOLD_LABELS[fieldTierKey(f, isCurrent)]?.color || "#999";
+    const barTip = "<strong>" + f.name + "</strong><br>NDVI: " + ndviVal.toFixed(3) + "<br>" + tierTooltipLine(f, isCurrent);
     svg.append("rect")
       .attr("x", 0)
       .attr("y", yScale(f.name))
@@ -2381,17 +2412,17 @@ function renderNDVIvsAWC() {
   svg.append("text").attr("class", "chart-title")
     .attr("x", -(height / 2)).attr("y", -(margin.left - 14))
     .attr("transform", "rotate(-90)").attr("text-anchor", "middle")
-    .text(isCurrent ? "NDVI" : "Days in Watch/Critical");
+    .text(isCurrent ? "NDVI" : "Stress days");
 
   const r = Math.min(12, width / ff.length * 0.8);
   ff.forEach(f => {
     var yVal = isCurrent ? f.current_ndvi : stressDaysByField[f.id];
-    const color = THRESHOLD_LABELS[f.current_risk]?.color || "#999";
+    const color = THRESHOLD_LABELS[fieldTierKey(f, isCurrent)]?.color || "#999";
     var scatterTip;
     if (isCurrent) {
-      scatterTip = "<strong>" + f.name + "</strong><br>NDVI: " + f.current_ndvi + "<br>AWS: " + f.soil.awc_in_in + " in<br>Risk: " + f.current_risk;
+      scatterTip = "<strong>" + f.name + "</strong><br>NDVI: " + f.current_ndvi + "<br>AWS: " + f.soil.awc_in_in + " in<br>" + tierTooltipLine(f, isCurrent);
     } else {
-      scatterTip = "<strong>" + f.name + "</strong><br>Stress: " + yVal + " days<br>AWS: " + f.soil.awc_in_in + " in<br>Risk: " + f.current_risk;
+      scatterTip = "<strong>" + f.name + "</strong><br>Stress: " + yVal + " days<br>AWS: " + f.soil.awc_in_in + " in<br>" + tierTooltipLine(f, isCurrent);
     }
     svg.append("circle")
       .attr("cx", xScale(f.soil.awc_in_in))
@@ -2526,14 +2557,10 @@ function renderMap() {
   allCornFields.forEach(function(f) {
     var visible = selectedIds.length === 0 || selectedIds.includes(f.id);
     var dynamic = ffMap[f.id];
-    var fieldRisk = dynamic ? dynamic.current_risk : f.current_risk;
+    var field = dynamic || f;
     var fieldNdvi = dynamic ? dynamic.display_ndvi : f.current_ndvi;
     // Mode-aware tier: actionable uses classifyRisk, reference uses season-stress tier
-    var tierKey = isCurrent
-      ? fieldRisk
-      : (dynamic && dynamic.season_stress_days != null
-          ? seasonStressTier(dynamic.season_stress_days, dynamic.season_length_days)
-          : 'healthy');
+    var tierKey = fieldTierKey(field, isCurrent);
     var fillColor = visible ? (THRESHOLD_LABELS[tierKey]?.color || "#999") : "#e0e0e0";
     var fieldName = f.name, fieldAcres = f.area_acres;
     var fieldId = f.id;
@@ -2597,13 +2624,10 @@ function renderMap() {
 
     // Hover tooltip — name, NDVI, and risk tier (replaces permanent on-map labels)
     fp.on("mouseenter", function(event) {
-      var tierText = isCurrent
-        ? (THRESHOLD_LABELS[fieldRisk]?.label || fieldRisk || 'Unknown')
-        : (SEASON_TIER_LABELS[tierKey] || tierKey);
       showTooltip(
         '<strong>' + fieldName + '</strong><br>NDVI: ' + (fieldNdvi != null ? fieldNdvi.toFixed(2) : '--') +
         '<br>Size: ' + (fieldAcres != null ? fieldAcres.toFixed(1) : '--') + ' acres' +
-        '<br>' + (isCurrent ? 'Risk' : 'Season') + ': ' + tierText,
+        '<br>' + tierTooltipLine(field, isCurrent),
         event.pageX, event.pageY
       );
     }).on("mouseleave", hideTooltip);
@@ -2707,7 +2731,7 @@ function renderGDD() {
     .attr("text-anchor", "end").attr("font-size", "10px").attr("fill", "#e67e22")
     .text("Target: " + targetGDD + " \u00b0F-days (maturity)");
 
-  var gddColorScale = d3.scaleOrdinal(d3.schemeTableau10).domain(ff.map(f => f.id));
+  var gddColorScale = d3.scaleOrdinal(FIELD_LINE_COLORS).domain(ff.map(f => f.id));
   const line = d3.line()
     .x(d => xScale(new Date(d.date)))
     .y(d => yScale(d.gdd));
@@ -2875,6 +2899,7 @@ function renderSoil() {
   container.html("");
   let ff = state.getFilteredFields().filter(f => f.soil?.om_pct != null).sort((a, b) => b.soil.om_pct - a.soil.om_pct);
   if (!ff.length) return;
+  var isCurrent = state.filters.selectedYear === String(new Date().getFullYear());
 
   const rect = container.node().getBoundingClientRect();
   const margin = { top: 10, right: 20, bottom: 20, left: 70 };
@@ -2897,7 +2922,7 @@ function renderSoil() {
     .call(d3.axisBottom(xScale).ticks(5));
 
   ff.forEach(f => {
-    const color = THRESHOLD_LABELS[f.current_risk]?.color || "#7cb342";
+    const color = THRESHOLD_LABELS[fieldTierKey(f, isCurrent)]?.color || "#7cb342";
     const awcInfo = f.soil?.awc_in_in != null ? 'AWS: ' + f.soil.awc_in_in + ' in' : '';
     const drainInfo = f.soil?.drainage_class || '';
     const soilTip = "<strong>" + f.name + "</strong><br>OM: " + f.soil.om_pct.toFixed(1) + "%" + (awcInfo ? '<br>' + awcInfo : '') + (drainInfo ? '<br>Drainage: ' + drainInfo : '');

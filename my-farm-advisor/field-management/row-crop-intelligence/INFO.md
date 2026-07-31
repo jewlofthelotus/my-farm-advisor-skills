@@ -95,13 +95,13 @@ Crop identity rotates year to year for most fields — see Crop Rotation below. 
    - Dashed line segments marking ≥30-day gaps between satellite observations (lower interpolation confidence)
    - A shaded region marking any known weather-data gap
 
-5. **Field Ranking** — bar chart, by Current NDVI (actionable) or Peak NDVI (reference), color-coded by risk tier
+5. **Field Ranking** — bar chart, by Current NDVI (actionable) or Peak NDVI (reference), color-coded by risk tier (actionable) or season-stress tier (reference)
 
-6. **Driver/Correlation View** — scatter plot; NDVI vs. AWS in actionable mode, Season Stress Duration vs. AWS in reference mode. The relationship description (e.g., "a visible inverse relationship") is computed from the actual plotted correlation each time, not a fixed statement.
+6. **Driver/Correlation View** — scatter plot; NDVI vs. AWS in actionable mode, Season Stress Duration vs. AWS in reference mode, points color-coded by the mode-appropriate tier. The relationship description (e.g., "a visible inverse relationship") is computed from the actual plotted correlation each time, not a fixed statement.
 
 7. **Weather / GDD** — GDD accumulation for the season, actual vs. Target (2500 °F-days, the corn-maturity requirement); Annual Avg (the location's typical full-season climatological total) is shown alongside in the KPI for context.
 
-8. **Soil / Sustainability** — bar chart of AWS or organic matter % per field, color-coded by risk tier
+8. **Soil / Sustainability** — bar chart of AWS or organic matter % per field, color-coded by risk tier (actionable) or season-stress tier (reference)
 
 9. **Narrative Panel** — written interpretation referencing live computed numbers, phrased differently by mode (e.g., actionable: "Continue routine monitoring..."; reference: "No fields required immediate intervention this season..."):
    - Patterns/trends observed across fields
