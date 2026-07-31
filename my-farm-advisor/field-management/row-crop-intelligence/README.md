@@ -8,7 +8,7 @@ Build a single-page, offline-functional operational dashboard for corn fields at
 
 ### Prerequisites
 
-- Python 3.10+ with `pandas`, `numpy`, `rasterio` installed
+- Python 3.10+ with `pandas`, `numpy`, `rasterio` installed (plus `shapely`, `scikit-learn`, `geopandas` for Management Zones)
 - The runtime data pipeline installed and seeded (see `../data-pipeline/`)
 - `DATA_PIPELINE_DATA_ROOT` environment variable pointing to the runtime root
 
@@ -67,11 +67,14 @@ The dashboard defaults to the current growing season (actionable mode: Priority 
 | `pandas` | CSV/JSON data assembly |
 | `numpy` | NDVI statistics, GDD calculation |
 | `rasterio` | Read NDVI GeoTIFF scene files |
+| `shapely` | Dissolve + simplify management-zone polygons (optional; zones skipped if absent) |
+| `scikit-learn` | K-means clustering for management zones (optional) |
+| `geopandas` | Management-zone area in acres (optional; falls back without zones) |
 | `json` (stdlib) | Data serialization |
 | `csv` (stdlib) | Weather/soil CSV parsing |
 | `datetime` (stdlib) | Date handling |
 
-All are available in the pipeline venv at `${DATA_PIPELINE_DATA_ROOT}/data-pipeline/.venv/`.
+All are available in the pipeline venv at `${DATA_PIPELINE_DATA_ROOT}/data-pipeline/.venv/`. The management-zone packages (`shapely`, `scikit-learn`, `geopandas`) are required only for Management Zones v1 — the generator degrades gracefully without them, generating the dashboard with everything except zone polygons.
 
 ### Runtime (Browser)
 
