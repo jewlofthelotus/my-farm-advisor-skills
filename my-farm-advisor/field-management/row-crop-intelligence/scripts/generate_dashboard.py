@@ -687,10 +687,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 .header .header-filters { display: flex; gap: 14px; align-items: flex-start; flex-shrink: 0; }
 .header .header-filters .filter-group { display: flex; flex-direction: column; gap: 3px; }
 .header .header-filters .filter-group label { font-size: 0.7rem; font-weight: 600; color: #b8d4e8; text-transform: uppercase; letter-spacing: 0.04em; }
-.header .header-filters select { padding: 4px 8px; border: none; border-radius: 4px; font-size: 0.75rem; background: #1a2e4a; color: #e0e8f0; min-width: 170px; }
+.header .header-filters select { padding: 4px 8px; border: none; border-radius: 4px; font-size: 0.75rem; background: #1a2e4a; color: #e0e8f0; min-width: 130px; }
+#field-filter-indicator { font-size: 0.75rem; white-space: nowrap; line-height: 1.5; }
+#field-filter-indicator.no-filter { background: none; border: none; padding: 0; color: rgba(255,255,255,0.85); font-weight: 500; cursor: default; }
+#field-filter-indicator.has-filter { display: inline-flex; align-items: center; gap: 6px; background: rgba(245, 215, 110, 0.15); border: 1px solid rgba(245, 215, 110, 0.4); border-radius: 999px; padding: 0 5px 0 10px; color: #fff; cursor: default; }
+#field-filter-indicator .clear-field-filter { cursor: pointer; opacity: 0.7; padding: 2px 4px; border-radius: 50%; }
+#field-filter-indicator .clear-field-filter:hover { opacity: 1; background: rgba(255,255,255,0.15); }
 .header .grower-name { color: #F5D76E; }
-.header .header-filters button { padding: 4px 14px; background: #4A7FB5; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.75rem; font-weight: 500; margin-top: 16px; }
-.header .header-filters button:hover { background: #3a6fa5; }
 .header-legend-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 0.8rem; color: #b8d4e8; text-decoration: none; user-select: none; }
 .header-legend-toggle:hover { color: #fff; }
 .header-legend-toggle .chevron { display: inline-block; transition: transform 0.25s; font-size: 0.7rem; }
@@ -791,14 +794,13 @@ svg.icon-lg { width: 24px; height: 24px; }
       </div>
       <div class="header-filters">
         <div class="filter-group">
-          <label>Fields:</label>
-          <select id="field-select"></select>
+          <label>Selected Field(s):</label>
+          <div id="field-filter-indicator">All Corn Fields</div>
         </div>
         <div class="filter-group">
           <label>Year:</label>
           <select id="year-select"></select>
         </div>
-        <button id="reset-btn">Reset</button>
       </div>
     </div>
     <div class="header-subrow">
@@ -1422,32 +1424,27 @@ function syncFilters() {
     state.filters.fieldIds = [];
     selectedId = null;
   }
-  var fieldSelect = document.getElementById("field-select");
-  fieldSelect.innerHTML = '<option value="">All Corn Fields</option>' + cornFields.map(function(f) {
-    var sel = f.id === selectedId;
-    return '<option value="' + f.id + '"' + (sel ? ' selected' : '') + '>' + f.name + '</option>';
-  }).join('');
 
-  var refIds = selectedId ? [selectedId] : validIds;
+  // Year dropdown: always full range, never dependent on field selection
   var allYears = Object.keys(ALL_FIELDS[0] && ALL_FIELDS[0].cdl_crops || {}).sort();
-  var validYears = allYears.filter(function(y) {
-    return refIds.some(function(id) {
-      var f = ALL_FIELDS.find(function(fi) { return fi.id === id; });
-      return f && isFieldCorn(f, y);
-    });
-  });
-  if (!validYears.includes(year) && validYears.length > 0) {
-    state.filters.selectedYear = validYears[validYears.length - 1];
-  } else if (validYears.length === 0) {
-    state.filters.selectedYear = '2026';
-  }
   var thisYear = String(new Date().getFullYear());
   var yearSelect = document.getElementById("year-select");
-  yearSelect.innerHTML = validYears.map(function(y) {
-    var sel = y === state.filters.selectedYear;
+  yearSelect.innerHTML = allYears.map(function(y) {
+    var sel = y === year;
     var label = y + (y === thisYear ? ' (Current)' : '');
     return '<option value="' + y + '"' + (sel ? ' selected' : '') + '>' + label + '</option>';
   }).join('');
+
+  // Field filter indicator (read-only, no dropdown)
+  var indicator = document.getElementById("field-filter-indicator");
+  indicator.classList.toggle("has-filter", !!selectedId);
+  indicator.classList.toggle("no-filter", !selectedId);
+  if (selectedId) {
+    var f = cornFields.find(function(fi) { return fi.id === selectedId; });
+    indicator.innerHTML = (f ? f.name : 'Field') + ' <span class="clear-field-filter" title="Clear field filter">\u2715</span>';
+  } else {
+    indicator.textContent = 'All Corn Fields';
+  }
 
   state.publish();
 }
@@ -2176,7 +2173,11 @@ function renderMap() {
     if (!visible) return;
 
     fp.on("click", function() {
-      state.filters.fieldIds = [fieldId];
+      if (state.filters.fieldIds.length === 1 && state.filters.fieldIds[0] === fieldId) {
+        state.filters.fieldIds = []; // clicking the already-selected field clears it
+      } else {
+        state.filters.fieldIds = [fieldId];
+      }
       syncFilters();
     });
 
@@ -2868,13 +2869,6 @@ function toggleLegend() {
   chevron.classList.toggle("open");
 }
 
-// ===== RESET =====
-function resetFilters() {
-  state.filters.fieldIds = [];
-  state.filters.selectedYear = '2026';
-  syncFilters();
-}
-
 // ===== RENDER ALL =====
 function renderAll() {
   renderKPIs();
@@ -2908,15 +2902,16 @@ document.addEventListener("click", function() {
   });
 });
 
-document.getElementById("reset-btn").addEventListener("click", resetFilters);
-
-document.getElementById("field-select").addEventListener("change", function() {
-  state.filters.fieldIds = this.value ? [this.value] : [];
-  syncFilters();
+document.getElementById("field-filter-indicator").addEventListener("click", function(e) {
+  if (e.target.classList.contains("clear-field-filter")) {
+    state.filters.fieldIds = [];
+    syncFilters();
+  }
 });
 
 document.getElementById("year-select").addEventListener("change", function() {
   state.filters.selectedYear = this.value;
+  state.filters.fieldIds = []; // always reset to All Corn Fields when year changes
   syncFilters();
 });
 

@@ -73,9 +73,8 @@ Crop identity rotates year to year for most fields — see Crop Rotation below. 
 
 ### Filter Bar
 
-- **Field selector** — single-select dropdown, defaults to "All Corn Fields" for the selected year
-- **Year selector** — choose the current season (labeled "(Current)") or any past year with corn-field data; this is the primary control switching the dashboard between actionable and reference mode
-- **Reset button** — restores default year and field selection
+- **Field filter** — map-driven, no dropdown: clicking a field on the map filters the whole dashboard to that field; clicking it again (or the ✕ on the header indicator) clears back to "All Corn Fields". The header shows a read-only indicator ("All Corn Fields" or "Field N ✕"). Field selection never constrains the Year list.
+- **Year selector** — always lists every year present in the data (never filtered by field selection); choose the current season (labeled "(Current)") or any past year with corn-field data. This is the primary control switching the dashboard between actionable and reference mode. Changing the year always resets the field filter to "All Corn Fields" for the new year.
 - **Dashboard Legend** — collapsible header panel documenting risk tier thresholds, data sources, and the NDVI flagging methodology (including growth-stage suppression rules)
 
 ### Sections (top to bottom)
@@ -88,7 +87,7 @@ Crop identity rotates year to year for most fields — see Crop Rotation below. 
    - **Current-season:** ranked, field-specific action list (e.g., "Monitor weekly. Low AWS raises drought sensitivity. Extended dry period. Check soil moisture and NDVI trend next week.")
    - **Reference:** season recap ranked by stress duration, with a notable-event callout when detected — a sharp NDVI drop correlated with either a dry spell or a temperature extreme, tagged with the growth stage it occurred in (e.g., "Sharp NDVI drop Oct 2–Nov 11, coinciding with a 14-day dry spell during R6+ (maturation).")
 
-3. **Field Risk Map** — D3 choropleth of field boundaries (or minimum-size markers for polygons too small to render legibly), colored by risk tier, with collision-avoided labels and leader lines for offset labels. Click a field to filter the whole dashboard.
+3. **Field Risk Map** — D3 choropleth of field boundaries (or minimum-size markers for polygons too small to render legibly), colored by risk tier, with collision-avoided labels and leader lines for offset labels. Click a field to filter the whole dashboard. Clicking it again (or the ✕ in the header) clears the filter.
 
 4. **NDVI Time Series** — one line per field, with:
    - Growth-stage annotations (Planting, VE, V6, VT, R1–R6) positioned by actual accumulated GDD
@@ -155,7 +154,7 @@ Two AI tools were used in different roles throughout this project: **opencode**,
 
 Across ~49 commits and roughly 2,000 session messages (Jul 24–30), opencode wrote and iterated on `generate_dashboard.py` and the embedded dashboard JS directly:
 - Scaffolded the subskill (README.md, INFO.md, INDEX.md, AGENTS.md) and wrote the initial single-page D3 dashboard
-- Built out the filter bar (year selector, corn-only implicit filtering, single-select field picker) and made KPIs/risk classification date- and context-aware
+- Built out the filter bar (year selector, corn-only implicit filtering, map-driven field filter) and made KPIs/risk classification date- and context-aware
 - Iterated extensively on the geospatial map (from an initial satellite-basemap approach through a full rebuild as a plain D3 choropleth with label collision avoidance, after determining the basemap approach conflicted with the offline/low-file-size requirements)
 - Fixed a significant set of correctness bugs identified during review (see below): GDD NaN propagation, AWS unit/label mismatch, NDVI trend using percent-change instead of absolute delta on a bounded 0–1 index, the missing planting-date gate, growth-stage-aware risk suppression, and the file-size optimization that took the dashboard from 5.76 MB to 532 KB
 - Investigated and resolved the underlying weather-data gap (confirmed as a genuine NASA POWER publication lag rather than a pipeline defect) and the NDVI staleness issue affecting several fields (confirmed as a pipeline extraction gap, since fixed)
