@@ -912,10 +912,9 @@ const ICONS = {
 // ===== DATE-AWARE FIELD HELPERS =====
 
 /**
- * computeCurrentGDDFromWeather
- * Extracts planting date (last spring frost or Apr 20 fallback), accumulates
- * GDD in °F-days (base 50°F) from planting to the last weather record, then
- * returns the growth phase and a human-readable stage label.
+ * phaseAndStageFromGDD
+ * Maps an accumulated GDD value (base 50°F) to a growth phase and a human-readable
+ * stage label. Shared by per-field classification and the grower-wide average.
  *
  * Phase enum:
  *   "establishing"       – 0 → VE (120 GDD): bare soil / emergence, NDVI not diagnostic
@@ -923,14 +922,12 @@ const ICONS = {
  *   "reproductive_early" – R1 → R4 (1400–2150 GDD): absolute NDVI floors only, decline suppressed
  *   "reproductive_late"  – R4+ (2150+ GDD): universal senescence, all flagging suppressed
  */
-function computeCurrentGDDFromWeather(weatherData, displayYear, config) {
-  var stages    = config.growth_stages || {};
-  var gddBaseF  = config.gdd_base_temp_f || 50.0;
-  var VE_GDD    = stages.VE  || 120;
-  var R1_GDD    = stages.R1  || 1400;
-  var R4_GDD    = stages.R4  || 2150;
+function phaseAndStageFromGDD(cumGDD, config) {
+  var stages = config.growth_stages || {};
+  var VE_GDD = stages.VE  || 120;
+  var R1_GDD = stages.R1  || 1400;
+  var R4_GDD = stages.R4  || 2150;
 
-  // Ordered stage list for bracket labelling
   var orderedStages = [
     ['VE', stages.VE || 120],  ['V6', stages.V6 || 500],
     ['VT', stages.VT || 1130], ['R1', stages.R1 || 1400],
@@ -943,27 +940,6 @@ function computeCurrentGDDFromWeather(weatherData, displayYear, config) {
     R1: 'Silking', R2: 'Blister', R3: 'Milk',
     R4: 'Dough',  R5: 'Dent',    R6: 'Maturing',
   };
-
-  // Guard: empty weather
-  if (!weatherData || !weatherData.dates || !weatherData.dates.length) {
-    return { phase: 'building', cumGDD: 0, stageLabel: 'Unknown', stageDescription: 'Unknown', plantingDate: null };
-  }
-
-  // --- Determine planting date (last spring frost before July 1, else Apr 20) ---
-  var plantingDate = getPlantingDate(weatherData, displayYear);
-
-  // --- Accumulate GDD in °F from planting date ---
-  var cumGDD = 0;
-  for (var j = 0; j < weatherData.dates.length; j++) {
-    var dj = new Date(weatherData.dates[j]);
-    if (dj < plantingDate) continue;
-    var tmx = +weatherData.T2M_MAX[j], tmn = +weatherData.T2M_MIN[j];
-    if (!isNaN(tmx) && !isNaN(tmn)) {
-      var avgF = (tmn + tmx) / 2 * 9 / 5 + 32;
-      cumGDD += Math.max(0, avgF - gddBaseF);
-    }
-  }
-  cumGDD = Math.round(cumGDD * 10) / 10;
 
   // --- Determine phase ---
   var phase;
@@ -994,7 +970,75 @@ function computeCurrentGDDFromWeather(weatherData, displayYear, config) {
     }
   }
 
-  return { phase: phase, cumGDD: cumGDD, stageLabel: stageLabel, stageDescription: stageDescription, plantingDate: plantingDate };
+  return { phase: phase, stageLabel: stageLabel, stageDescription: stageDescription };
+}
+
+// Representative field for grower-wide chart annotations: the weather grid shared by
+// the most filtered fields (ties fall back to field order). Collapses to the single
+// selected field when a field filter is active.
+function representativeField(ff) {
+  if (!ff.length) return null;
+  var counts = {};
+  ff.forEach(function(f) {
+    var g = f.weather_series_id;
+    counts[g] = (counts[g] || 0) + 1;
+  });
+  var best = ff[0], bestCount = -1;
+  ff.forEach(function(f) {
+    if (counts[f.weather_series_id] > bestCount) {
+      best = f;
+      bestCount = counts[f.weather_series_id];
+    }
+  });
+  return best;
+}
+
+// Grower-wide growth-stage aggregate: average each field's own accumulated GDD, then
+// derive phase/label from the average. Used only for whole-dashboard display values
+// (KPI header, chart title); per-field classification always uses the field's own phase.
+function aggregatePhaseInfo(ff) {
+  var gddSum = 0, n = 0;
+  ff.forEach(function(f) {
+    if (f.cum_gdd_f != null) { gddSum += f.cum_gdd_f; n++; }
+  });
+  if (!n) return { phase: 'building', stageLabel: '', stageDescription: '' };
+  var avgGDD = Math.round(gddSum / n * 10) / 10;
+  return phaseAndStageFromGDD(avgGDD, CONFIG);
+}
+
+/**
+ * Compute accumulated GDD (base 50°F) and current growth stage for a field's own
+ * weather series. Fields span multiple weather grid cells, so callers must pass the
+ * field's own weather data — never another field's series.
+ */
+function computeCurrentGDDFromWeather(weatherData, displayYear, config) {
+  var gddBaseF = config.gdd_base_temp_f || 50.0;
+
+  // Guard: empty weather
+  if (!weatherData || !weatherData.dates || !weatherData.dates.length) {
+    return { phase: 'building', cumGDD: 0, stageLabel: 'Unknown', stageDescription: 'Unknown', plantingDate: null };
+  }
+
+  // --- Determine planting date (last spring frost before July 1, else Apr 20) ---
+  var plantingDate = getPlantingDate(weatherData, displayYear);
+
+  // --- Accumulate GDD in °F from planting date ---
+  var cumGDD = 0;
+  for (var j = 0; j < weatherData.dates.length; j++) {
+    var dj = new Date(weatherData.dates[j]);
+    if (dj < plantingDate) continue;
+    var tmx = +weatherData.T2M_MAX[j], tmn = +weatherData.T2M_MIN[j];
+    if (!isNaN(tmx) && !isNaN(tmn)) {
+      var avgF = (tmn + tmx) / 2 * 9 / 5 + 32;
+      cumGDD += Math.max(0, avgF - gddBaseF);
+    }
+  }
+  cumGDD = Math.round(cumGDD * 10) / 10;
+
+  // --- Determine phase and stage label from accumulated GDD ---
+  var ps = phaseAndStageFromGDD(cumGDD, config);
+
+  return { phase: ps.phase, cumGDD: cumGDD, stageLabel: ps.stageLabel, stageDescription: ps.stageDescription, plantingDate: plantingDate };
 }
 
 /**
@@ -1372,19 +1416,14 @@ const state = {
     }
     var self = this;
 
-    // Compute growth phase once using the first field's weather (grower-average convention,
-    // same as the NDVI chart annotation path). All fields share the same growing region.
-    var phaseInfo = { phase: 'building', cumGDD: 0, stageLabel: 'Unknown', stageDescription: 'Unknown', plantingDate: null };
-    if (ff.length > 0) {
-      var firstWeather = self.getFilteredWeather(ff[0]);
-      phaseInfo = computeCurrentGDDFromWeather(firstWeather, year, CONFIG);
-    }
-
     return ff.map(function(f) {
       var ndviSeries = self.getFilteredNDVISeries(f);
       var weatherData = self.getFilteredWeather(f);
-      var risk = classifyRisk(ndviSeries, CONFIG, phaseInfo.phase, phaseInfo.cumGDD);
-      var trend = computeNDVITrend(ndviSeries, phaseInfo.phase);
+      // Growth phase from the field's OWN weather grid (fields span multiple grid cells,
+      // so a single shared phase misclassifies fields outside the first field's grid).
+      var fieldPhaseInfo = computeCurrentGDDFromWeather(weatherData, year, CONFIG);
+      var risk = classifyRisk(ndviSeries, CONFIG, fieldPhaseInfo.phase, fieldPhaseInfo.cumGDD);
+      var trend = computeNDVITrend(ndviSeries, fieldPhaseInfo.phase);
       var lastNDVI = ndviSeries.length ? ndviSeries[ndviSeries.length - 1].value : null;
       var peakNDVI = ndviSeries.length ? d3.max(ndviSeries, function(d) { return d.value; }) : null;
       var weatherSumm = computeWeatherSummaries(weatherData, CONFIG);
@@ -1397,10 +1436,10 @@ const state = {
         weather_summary: Object.assign({}, f.weather_summary, weatherSumm),
         ndvi_series: ndviSeries,
         // Growth-stage context for KPI display and action list
-        current_phase: phaseInfo.phase,
-        current_stage_label: phaseInfo.stageLabel,
-        stage_description: phaseInfo.stageDescription,
-        cum_gdd_f: phaseInfo.cumGDD,
+        current_phase: fieldPhaseInfo.phase,
+        current_stage_label: fieldPhaseInfo.stageLabel,
+        stage_description: fieldPhaseInfo.stageDescription,
+        cum_gdd_f: fieldPhaseInfo.cumGDD,
       });
     });
   },
@@ -1478,10 +1517,11 @@ function renderKPIs() {
   // anyDeclining variable introduced. 'expected_decline' fields are NOT counted here.
   const declining = ff.filter(f => f.ndvi_trend === 'declining').length;
 
-  // Growth-stage context (from first field; all fields share phase in getFilteredFields)
-  var currentPhase = ff.length ? (ff[0].current_phase || 'building') : 'building';
-  var stageLabel   = ff.length ? (ff[0].current_stage_label || '') : '';
-  var stageDesc    = ff.length ? (ff[0].stage_description || '') : '';
+  // Aggregate growth-stage context — grower-wide average of each field's own GDD
+  var aggPhase = aggregatePhaseInfo(ff);
+  var currentPhase = aggPhase.phase;
+  var stageLabel   = aggPhase.stageLabel;
+  var stageDesc    = aggPhase.stageDescription;
 
   // NDVI tier: also gate by phase — in establishing/reproductive_late the avg NDVI
   // number is not diagnostic, so don't colour-code the KPI card by it.
@@ -1498,7 +1538,8 @@ function renderKPIs() {
   const gddVals = ff.map(f => f.weather_summary?.gdd_accumulated || 0);
   const avgGDD = gddVals.length ? Math.round(gddVals.reduce((a,b) => a+b, 0) / gddVals.length) : 0;
 
-  var normalGDD = ff[0]?.weather_summary?.gdd_normal || 0;
+  var repField = representativeField(ff);
+  var normalGDD = (repField && repField.weather_summary?.gdd_normal) || 0;
   var gddTrendLine = 'Target: ' + CONFIG.gdd_target + ' (maturity) &middot; Annual Avg: ' + normalGDD;
   var gddCardHtml =
     '<div class="kpi-card healthy">' +
@@ -1590,9 +1631,10 @@ function renderNDVITimeSeries() {
   container.html("");
   const ff = state.getFilteredFields();
 
-  // Stage-aware chart title
-  var currentPhase = ff.length ? (ff[0].current_phase || 'building') : 'building';
-  var stageLabel   = ff.length ? (ff[0].current_stage_label || '') : '';
+  // Stage-aware chart title (grower-wide average stage)
+  var aggPhase = aggregatePhaseInfo(ff);
+  var currentPhase = aggPhase.phase;
+  var stageLabel   = aggPhase.stageLabel;
   var ndviLegendSpan = '<span class="map-legend" id="ndvi-legend"></span>';
   var chartTitle;
   var isCurrent = state.filters.selectedYear === String(new Date().getFullYear());
@@ -1661,7 +1703,7 @@ function renderNDVITimeSeries() {
   var gddBaseF = CONFIG.gdd_base_temp_f;
   var displayYear = state.filters.selectedYear;
   var chartStart = xScale.domain()[0], chartEnd = xScale.domain()[1];
-  var weatherField = ff[0];
+  var weatherField = representativeField(ff);
   var dailyData = state.getFilteredWeather(weatherField);
   if (dailyData.dates.length > 0) {
     // Determine planting date from last spring frost, fallback to April 20
@@ -2309,7 +2351,8 @@ function renderGDD() {
     .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
 
   const targetGDD = CONFIG.gdd_target;
-  const normalGDD = ff[0].weather_summary?.gdd_normal || 1500;
+  const repField = representativeField(ff);
+  const normalGDD = (repField && repField.weather_summary?.gdd_normal) || 1500;
   const maxGDD = Math.max(targetGDD, normalGDD, ...fieldData.map(f => f.current.length ? f.current[f.current.length - 1].gdd : 0));
   const maxY = Math.ceil(maxGDD / 500) * 500;
 
@@ -2405,7 +2448,7 @@ function renderGDD() {
   var gddBaseF    = CONFIG.gdd_base_temp_f;
   var displayYear = state.filters.selectedYear;
   var chartStart  = xScale.domain()[0], chartEnd = xScale.domain()[1];
-  var dailyData   = state.getFilteredWeather(ff[0]);
+  var dailyData   = state.getFilteredWeather(representativeField(ff));
   if (dailyData.dates.length > 0) {
     // Planting date: last spring frost (T2M_MIN <= 0°C, DOY <= 182), fallback Apr 20
     var plantingDate = getPlantingDate(dailyData, displayYear);
@@ -2726,7 +2769,8 @@ function renderNarrative() {
   const scatterCount = ff.filter(f => f.display_ndvi != null && f.soil?.awc_in_in != null).length;
   const gddVals = ff.map(f => f.weather_summary?.gdd_accumulated || 0);
   const gdd = gddVals.length ? Math.round(gddVals.reduce((a,b) => a+b, 0) / gddVals.length) : 0;
-  const normal = ff[0]?.weather_summary?.gdd_normal || 0;
+  const repField = representativeField(ff);
+  const normal = (repField && repField.weather_summary?.gdd_normal) || 0;
   const gddDiff = gdd - normal;
 
   // Reference-mode correlation for scatter plot description

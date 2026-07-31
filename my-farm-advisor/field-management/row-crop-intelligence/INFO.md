@@ -130,7 +130,7 @@ Crop identity rotates year to year for most fields — see Crop Rotation below. 
 
 ### Risk Classification Logic
 
-Corn phenology is tracked via accumulated GDD (base 50°F) against standard growth-stage boundaries (VE, V6, VT, R1–R6). Risk classification is gated by phase:
+Corn phenology is tracked via accumulated GDD (base 50°F) against standard growth-stage boundaries (VE, V6, VT, R1–R6). GDD and growth stage are computed **per field from its own weather grid cell** (fields span multiple grid cells, so a single shared phase would misclassify fields outside one grid). The header "Growth Stage" display uses the grower-wide average of those per-field GDD values; chart stage annotations use the majority weather grid's series. Risk classification is gated by phase:
 
 - **Establishing (pre-VE):** NDVI flagging is fully suppressed — bare soil/emergence NDVI isn't diagnostic of field health.
 - **Building canopy (VE–VT) & early reproductive (R1–R4):** absolute floor checks are active — **Critical** if NDVI < 0.5, **Watch** if NDVI is between 0.5 and the growth-stage-scaled Healthy threshold (see below). A genuinely low NDVI during grain fill (R1–R4) can still indicate a real problem (disease, plant loss) and is worth flagging.
