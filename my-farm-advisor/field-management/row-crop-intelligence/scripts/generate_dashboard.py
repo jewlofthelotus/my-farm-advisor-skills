@@ -1027,7 +1027,7 @@ svg.icon-lg { width: 24px; height: 24px; }
     <div class="header-legend-content" id="legend-content">
       <div class="header-legend-body">
         <div class="legend-column">
-          <h4>Risk Tiers</h4>
+          <h4 id="legend-tiers-title">Risk Tiers</h4>
           <div id="legend-risk-tiers"></div>
         </div>
         <div class="sources-column">
@@ -3230,22 +3230,34 @@ function renderFooter() {
 
 // ===== HEADER LEGEND =====
 function renderHeaderLegend() {
-  var tiers = [
-    { key: "healthy", desc: "NDVI &ge; " + CONFIG.watch_threshold + " (scaled by growth stage before VT)" },
-    { key: "watch",   desc: "NDVI " + CONFIG.stress_threshold + "&ndash;" + CONFIG.watch_threshold + " (all phases) or declining &gt;" + CONFIG.ndvi_decline_warning_pct + "% (vegetative only)" },
-    { key: "critical",desc: "NDVI &lt; " + CONFIG.stress_threshold + " (all phases) or declining &gt;" + CONFIG.ndvi_decline_critical_pct + "% (vegetative only)" }
-  ];
+  var isCurrent = state.filters.selectedYear === String(new Date().getFullYear());
+  var tiers, note;
+  if (isCurrent) {
+    tiers = [
+      { key: "healthy", desc: "NDVI &ge; " + CONFIG.watch_threshold + " (scaled by growth stage before VT)" },
+      { key: "watch",   desc: "NDVI " + CONFIG.stress_threshold + "&ndash;" + CONFIG.watch_threshold + " (all phases) or declining &gt;" + CONFIG.ndvi_decline_warning_pct + "% (vegetative only)" },
+      { key: "critical",desc: "NDVI &lt; " + CONFIG.stress_threshold + " (all phases) or declining &gt;" + CONFIG.ndvi_decline_critical_pct + "% (vegetative only)" }
+    ];
+    note = '<em>NDVI alerts are off before emergence and late in the season, when low NDVI is normal. ' +
+      'From silking through dough stage, a falling trend won&rsquo;t trigger an alert &mdash; but a genuinely low reading still will, ' +
+      'since that can mean a real problem like disease.</em>';
+  } else {
+    tiers = [
+      { key: "healthy", desc: "less than 10% of the season below the NDVI threshold" },
+      { key: "watch",   desc: "10&ndash;30% of the season below the NDVI threshold" },
+      { key: "critical",desc: "more than 30% of the season below the NDVI threshold" }
+    ];
+    note = '<em>Season stress duration only counts days below the NDVI threshold during Building and Early-reproductive stages (VE&ndash;R4) &mdash; ' +
+      'pre-emergence and late-season senescence are excluded, since NDVI isn&rsquo;t diagnostic in those windows.</em>';
+  }
+  document.getElementById("legend-tiers-title").textContent = isCurrent ? 'Risk Tiers' : 'Season Stress Tiers';
   var html = "";
   tiers.forEach(function(t) {
     var tl = THRESHOLD_LABELS[t.key];
-    html += '<div class="legend-item"><span class="legend-swatch" style="background:' + tl.color + '"></span>' + tl.label + ' - ' + t.desc + '</div>';
+    var label = isCurrent ? tl.label : SEASON_TIER_LABELS[t.key];
+    html += '<div class="legend-item"><span class="legend-swatch" style="background:' + tl.color + '"></span>' + label + ' - ' + t.desc + '</div>';
   });
-  // Growth-phase gating note
-  html += '<div style="margin-top:8px; font-size:0.78rem; color:#c8d8e8; line-height:1.4;">' +
-    '<em>NDVI alerts are off before emergence and late in the season, when low NDVI is normal. ' +
-    'From silking through dough stage, a falling trend won&rsquo;t trigger an alert &mdash; but a genuinely low reading still will, ' +
-    'since that can mean a real problem like disease.</em>' +
-    '</div>';
+  html += '<div style="margin-top:8px; font-size:0.78rem; color:#c8d8e8; line-height:1.4;">' + note + '</div>';
   d3.select("#legend-risk-tiers").html(html);
 }
 
