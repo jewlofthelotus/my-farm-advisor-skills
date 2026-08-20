@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import textwrap
 from datetime import date, datetime
 from pathlib import Path
 
@@ -41,89 +42,103 @@ _FIPS_TO_STATE = {
 # ---------------------------------------------------------------------------
 # Crop thresholds derived from strategy/crop-strategy/resources/2026-usa-*.md
 # ---------------------------------------------------------------------------
-# Each entry: GDD base/cap in Celsius, heat-stress thresholds, key growth
-# stages with approximate GDD accumulation ranges, and frost sensitivity.
+# Each entry: GDD base/cap in Fahrenheit, heat-stress thresholds, key growth
+# stages with approximate GDD accumulation ranges (°F-day), and frost sensitivity.
 # Reference files are loaded as context text, not parsed programmatically.
 
 CROP_THRESHOLDS: dict[str, dict] = {
     "Corn": {
-        "gdd_base_c": 10.0,
-        "gdd_cap_c": 30.0,
-        "heat_threshold_c": 35.0,
-        "frost_threshold_c": 0.0,
+        "gdd_base_f": 50.0,
+        "gdd_cap_f": 86.0,
+        "heat_threshold_f": 95.0,
+        "frost_threshold_f": 32.0,
         "resource": "2026-usa-corn.md",
         "stages": [
-            ("V6", 280, "Vegetative growth accelerates"),
-            ("V10", 475, "Peak nitrogen uptake"),
-            ("R1 (Silking)", 1120, "Pollination; most water-sensitive"),
-            ("R5 (Dent)", 1750, "Grain fill underway"),
-            ("R6 (Maturity)", 2200, "Black layer; physiological maturity"),
+            ("V6", 504, "Vegetative growth accelerates"),
+            ("V10", 855, "Peak nitrogen uptake"),
+            ("R1 (Silking)", 2016, "Pollination; most water-sensitive"),
+            ("R5 (Dent)", 3150, "Grain fill underway"),
+            ("R6 (Maturity)", 3960, "Black layer; physiological maturity"),
         ],
     },
     "Soybeans": {
-        "gdd_base_c": 10.0,
-        "gdd_cap_c": 30.0,
-        "heat_threshold_c": 33.0,
-        "frost_threshold_c": 0.0,
+        "gdd_base_f": 50.0,
+        "gdd_cap_f": 86.0,
+        "heat_threshold_f": 91.0,
+        "frost_threshold_f": 32.0,
         "resource": "2026-usa-soybean.md",
         "stages": [
-            ("V3", 150, "Nodulation established"),
-            ("R1 (Bloom)", 550, "Flowering begins; heat sensitive"),
-            ("R3 (Pod set)", 800, "Pod elongation; moisture critical"),
-            ("R5 (Seed fill)", 1150, "Seed fill; yield determination"),
-            ("R7 (Maturity)", 1600, "Physiological maturity reached"),
+            ("V3", 270, "Nodulation established"),
+            ("R1 (Bloom)", 990, "Flowering begins; heat sensitive"),
+            ("R3 (Pod set)", 1440, "Pod elongation; moisture critical"),
+            ("R5 (Seed fill)", 2070, "Seed fill; yield determination"),
+            ("R7 (Maturity)", 2880, "Physiological maturity reached"),
         ],
     },
     "Cotton": {
-        "gdd_base_c": 15.6,
-        "gdd_cap_c": 37.8,
-        "heat_threshold_c": 38.0,
-        "frost_threshold_c": 0.0,
+        "gdd_base_f": 60.0,
+        "gdd_cap_f": 100.0,
+        "heat_threshold_f": 100.0,
+        "frost_threshold_f": 32.0,
         "resource": "2026-usa-cotton.md",
         "stages": [
-            ("Emergence", 50, "Crop emergence"),
-            ("Squaring", 450, "First square; vegetative growth"),
-            ("Bloom", 775, "Flowering peak"),
-            ("Cutout", 1100, "Peak bloom to cutout"),
-            ("Maturity", 1600, "Boll opening"),
+            ("Emergence", 90, "Crop emergence"),
+            ("Squaring", 810, "First square; vegetative growth"),
+            ("Bloom", 1395, "Flowering peak"),
+            ("Cutout", 1980, "Peak bloom to cutout"),
+            ("Maturity", 2880, "Boll opening"),
         ],
     },
     "Winter Wheat": {
-        "gdd_base_c": 0.0,
-        "gdd_cap_c": 25.0,
-        "heat_threshold_c": 32.0,
-        "frost_threshold_c": -4.0,
+        "gdd_base_f": 32.0,
+        "gdd_cap_f": 77.0,
+        "heat_threshold_f": 90.0,
+        "frost_threshold_f": 25.0,
         "resource": "2026-usa-wheat.md",
         "stages": [
-            ("Green-up", 100, "Spring green-up"),
-            ("Jointing", 450, "Stem elongation"),
-            ("Heading", 750, "Head emergence"),
-            ("Anthesis", 900, "Flowering; frost sensitive"),
-            ("Maturity", 1400, "Harvest readiness"),
+            ("Green-up", 180, "Spring green-up"),
+            ("Jointing", 810, "Stem elongation"),
+            ("Heading", 1350, "Head emergence"),
+            ("Anthesis", 1620, "Flowering; frost sensitive"),
+            ("Maturity", 2520, "Harvest readiness"),
         ],
     },
     "Sorghum": {
-        "gdd_base_c": 10.0,
-        "gdd_cap_c": 37.0,
-        "heat_threshold_c": 36.0,
-        "frost_threshold_c": 0.0,
+        "gdd_base_f": 50.0,
+        "gdd_cap_f": 99.0,
+        "heat_threshold_f": 97.0,
+        "frost_threshold_f": 32.0,
         "resource": "2026-us-sorghum.md",
         "stages": [
-            ("Emergence", 80, "Crop emergence"),
-            ("Growing point diff.", 200, "Panicle initiation"),
-            ("Boot", 500, "Flag leaf visible"),
-            ("Flowering", 700, "Bloom; heat sensitive"),
-            ("Soft dough", 950, "Grain fill underway"),
-            ("Maturity", 1300, "Physiological maturity"),
+            ("Emergence", 144, "Crop emergence"),
+            ("Growing point diff.", 360, "Panicle initiation"),
+            ("Boot", 900, "Flag leaf visible"),
+            ("Flowering", 1260, "Bloom; heat sensitive"),
+            ("Soft dough", 1710, "Grain fill underway"),
+            ("Maturity", 2340, "Physiological maturity"),
+        ],
+    },
+    "Grapes": {
+        "gdd_base_f": 50.0,
+        "gdd_cap_f": 86.0,
+        "heat_threshold_f": 95.0,
+        "frost_threshold_f": 32.0,
+        "resource": None,
+        "stages": [
+            ("Budbreak", 59, "Budburst; shoot growth begins"),
+            ("Bloom", 298, "Flowering; bloom sensitivity window"),
+            ("Fruit Set", 473, "Berry set; fruit development begins"),
+            ("Veraison", 1401, "Berry softening and color change"),
+            ("Harvest", 2053, "Sugar accumulation; harvest maturity"),
         ],
     },
 }
 
 _FALLBACK_THRESHOLDS = {
-    "gdd_base_c": 10.0,
-    "gdd_cap_c": 30.0,
-    "heat_threshold_c": 35.0,
-    "frost_threshold_c": 0.0,
+    "gdd_base_f": 50.0,
+    "gdd_cap_f": 86.0,
+    "heat_threshold_f": 95.0,
+    "frost_threshold_f": 32.0,
     "resource": None,
     "stages": [],
 }
@@ -149,7 +164,9 @@ def _load_crop_thresholds(crop_name: str) -> dict:
 # Field resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_field(data_root: Path, raw_field_id: str) -> tuple[str, str, Path]:
+def _resolve_field(
+    data_root: Path, raw_field_id: str, grower_slug: str | None = None
+) -> tuple[str, str, Path]:
     growers_dir = data_root / "growers"
     if not growers_dir.is_dir():
         raise FileNotFoundError(
@@ -163,7 +180,18 @@ def _resolve_field(data_root: Path, raw_field_id: str) -> tuple[str, str, Path]:
     normalized = _norm(raw_field_id)
     candidates: list[tuple[str, str, Path]] = []
 
-    for grower_dir in sorted(growers_dir.iterdir()):
+    if grower_slug:
+        matching_growers = [
+            g for g in growers_dir.iterdir()
+            if g.is_dir() and _norm(g.name) == _norm(grower_slug)
+        ]
+        if not matching_growers:
+            raise FileNotFoundError(f"Grower '{grower_slug}' not found under {growers_dir}")
+        grower_dirs = matching_growers
+    else:
+        grower_dirs = sorted(growers_dir.iterdir())
+
+    for grower_dir in grower_dirs:
         farms_dir = grower_dir / "farms"
         if not farms_dir.is_dir():
             continue
@@ -246,8 +274,7 @@ def _resolve_field_location(farm_dir: Path, field_slug: str) -> tuple[str, str]:
         county = str(row.get("county_name", "")).strip()
         state_fips = str(row.get("state_fips", "")).strip().zfill(2)
         county_fips = str(row.get("county_fips", "")).strip().zfill(3)
-        state = _FIPS_TO_STATE.get(state_fips, "")
-        parts = [p for p in (state, county) if p]
+        parts = [p for p in (county,) if p]
         location_str = " — ".join(parts) if parts else ""
         fips = (state_fips + county_fips) if (state_fips != "00" and county_fips != "000") else ""
         return (location_str, fips)
@@ -259,9 +286,26 @@ def _resolve_field_location(farm_dir: Path, field_slug: str) -> tuple[str, str]:
 # Data loading
 # ---------------------------------------------------------------------------
 
+def _load_display_name(meta_path: Path, *, fallback: str) -> str:
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        display = str(meta.get("display_name", "")).strip()
+        if display:
+            return display
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
+    return fallback
+
+
 def _load_field_cdl(farm_tables_dir: Path, year: int, field_id: str) -> str | None:
     pattern = f"*_{year}_cdl.csv"
     matches = sorted(farm_tables_dir.glob(pattern))
+    if not matches:
+        matches = sorted(
+            farm_tables_dir.glob("*_cdl.csv"),
+            key=lambda p: int(re.search(r"_(\d{4})_cdl\.csv$", p.name).group(1)),
+            reverse=True,
+        )
     norm_id = str(field_id).replace("_", "-").replace(" ", "-").lower()
     for path in matches:
         try:
@@ -278,6 +322,26 @@ def _load_field_cdl(farm_tables_dir: Path, year: int, field_id: str) -> str | No
             dominant = field_rows.loc[field_rows["pct"].idxmax()]
             return str(dominant["crop_name"])
         return str(field_rows.iloc[0]["crop_name"])
+    return None
+
+
+def _load_boundary_crop(field_path: Path) -> str | None:
+    boundary_path = field_path / "boundary" / "field_boundary.geojson"
+    if not boundary_path.is_file():
+        return None
+    try:
+        fc = json.loads(boundary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    for feature in fc.get("features") or []:
+        props = feature.get("properties") or {}
+        raw = props.get("crop_name")
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        for key in CROP_THRESHOLDS:
+            if key.lower() == raw.strip().lower():
+                return key
+        return raw.strip()
     return None
 
 
@@ -298,7 +362,7 @@ def _load_county_maturity(
                 match = df[df["fips"] == fips]
                 if not match.empty:
                     result["rm"] = float(match.iloc[0]["rm_relative_maturity"])
-                    result["gdd_total"] = float(match.iloc[0].get("gdd_total_c", 0))
+                    result["gdd_total"] = float(match.iloc[0].get("gdd_total_c", 0)) * 1.8
         elif "soybean" in crop_lower:
             parquet_path = shared_dir / "soybean_maturity" / f"mg_by_fips_{year}.parquet"
             if parquet_path.exists():
@@ -329,6 +393,34 @@ def _load_field_weather(field_path: Path) -> pd.DataFrame | None:
     except Exception as exc:
         print(f"warning: failed to load weather: {exc}", file=sys.stderr)
     return None
+
+
+def _detect_weather_gap(weather: pd.DataFrame) -> tuple[int, int] | None:
+    """Return (start_doy, end_doy) of a >=2-day NaN span in T2M_MIN/T2M_MAX.
+
+    Mirrors the row-crop dashboard's getWeatherGap: the first-to-last NaN day
+    within the given (raw, pre-dropna) frame is shaded to highlight where the
+    archive ends (e.g., NASA POWER latency leaves current-year rows NaN).
+    """
+    if weather is None or weather.empty:
+        return None
+    df = weather.sort_values("date").reset_index(drop=True)
+    first_nan = None
+    last_nan = None
+    for _, row in df.iterrows():
+        if pd.isna(row.get("T2M_MIN")) or pd.isna(row.get("T2M_MAX")):
+            if first_nan is None:
+                first_nan = row["date"]
+            last_nan = row["date"]
+    if first_nan is None or last_nan is None:
+        return None
+    if (pd.to_datetime(last_nan) - pd.to_datetime(first_nan)).days < 2:
+        return None
+
+    def _doy(d):
+        return pd.to_datetime(d).timetuple().tm_yday
+
+    return (_doy(first_nan), _doy(last_nan))
 
 
 def _load_field_ndvi(field_path: Path, year: int) -> pd.DataFrame | None:
@@ -487,13 +579,13 @@ def _try_load_ndvi(field_path: Path, year: int) -> pd.DataFrame | None:
 # ---------------------------------------------------------------------------
 
 def _compute_gdd(
-    weather: pd.DataFrame, base_c: float, cap_c: float
+    weather: pd.DataFrame, base_f: float, cap_f: float
 ) -> pd.DataFrame:
     df = weather.copy()
     t_avg = (df["T2M_MAX"] + df["T2M_MIN"]) / 2.0
-    gdd_raw = np.maximum(0.0, t_avg - base_c)
-    if cap_c > base_c:
-        gdd_raw = np.minimum(gdd_raw, cap_c - base_c)
+    gdd_raw = np.maximum(0.0, t_avg - base_f)
+    if cap_f > base_f:
+        gdd_raw = np.minimum(gdd_raw, cap_f - base_f)
     df["gdd"] = gdd_raw
     df["gdd_cumulative"] = df.sort_values("date")["gdd"].cumsum()
     return df
@@ -681,7 +773,7 @@ def _detect_temp_events(
     if weather is None or weather.empty:
         return events
     df = weather.sort_values("date").reset_index(drop=True)
-    heat_thresh = thresholds.get("heat_threshold_c", 35.0)
+    heat_thresh = thresholds.get("heat_threshold_f", 35.0)
     _to_doy = lambda d: d.timetuple().tm_yday if hasattr(d, "timetuple") else 0
 
     # Heat-wave detection: group consecutive (≤1 day gap) hot days into spans
@@ -722,7 +814,7 @@ def _detect_temp_events(
     cool_count = 0
     for _, row in df.iterrows():
         month = row["date"].month if hasattr(row["date"], "month") else 0
-        if 5 <= month <= 7 and row["T2M_MAX"] < 20.0:
+        if 5 <= month <= 7 and row["T2M_MAX"] < 68.0:
             if cool_start is None:
                 cool_start = row["date"]
             cool_end = row["date"]
@@ -744,7 +836,7 @@ def _detect_temp_events(
             "color": "#1e88e5",
         })
 
-    frost_thresh = thresholds.get("frost_threshold_c", 0.0)
+    frost_thresh = thresholds.get("frost_threshold_f", 0.0)
     frost_doy = df.loc[df["T2M_MIN"] <= frost_thresh, "date"].apply(_to_doy)
     spring_frosts = frost_doy[frost_doy <= 182]
     fall_frosts = frost_doy[frost_doy > 182]
@@ -791,10 +883,40 @@ def _detect_gdd_events(
 # Dashboard figure
 # ---------------------------------------------------------------------------
 
+def _build_source_footer(
+    crop_name: str | None,
+    weather_gap: tuple[int, int] | None,
+    subtitle_text: str | None = None,
+) -> str:
+    generated = datetime.now().isoformat(timespec="seconds")
+    lines = [f"Generated: {generated}"]
+    if subtitle_text:
+        lines.append(subtitle_text)
+    lines += [
+        "",
+        "Sources",
+        "  NDVI: mean per-scene from Sentinel-2 (L2A) NDVI rasters",
+        "  Weather: NASA POWER daily (T2M, T2M_MIN, T2M_MAX, precipitation)",
+        "  GDD: crop-specific base/cap from daily Tmin/Tmax (Crop Strategy reference)",
+        "  CDL crop: USDA Cropland Data Layer, dominant crop by pixel % (latest available year)",
+    ]
+    if weather_gap:
+        lines.append(
+            "  Note: grey \"Weather gap\" band marks days with no weather data yet "
+            "(NASA POWER archive lags ~2 months); values freeze at the last available day."
+        )
+    lines.append(
+        "  Note: NASA POWER reanalysis (MERRA-2, 0.5° grid) may underestimate local "
+        "temperature extremes, especially near large water bodies or complex terrain."
+    )
+    return "\n".join(lines)
+
+
 def _build_dashboard(
     field_id: str,
     year: int,
     location_prefix: str = "",
+    field_display_name: str | None = None,
     crop_name: str | None = None,
     weather: pd.DataFrame | None = None,
     weather_gdd: pd.DataFrame | None = None,
@@ -803,13 +925,19 @@ def _build_dashboard(
     precip_events: list[dict] | None = None,
     temp_events: list[dict] | None = None,
     gdd_events: list[dict] | None = None,
+    projected_gdd_events: list[dict] | None = None,
     thresholds: dict | None = None,
     maturity_info: dict | None = None,
+    weather_gap: tuple[int, int] | None = None,
+    avg_annual_gdd: float | None = None,
+    avg_annual_precip: float | None = None,
 ) -> plt.Figure:
     ndvi_events = ndvi_events or []
     precip_events = precip_events or []
     temp_events = temp_events or []
     gdd_events = gdd_events or []
+    projected_gdd_events = projected_gdd_events or []
+    all_gdd_events = gdd_events + projected_gdd_events
     thresholds = thresholds or {}
     maturity_info = maturity_info or {}
     num_panels = 4
@@ -817,30 +945,30 @@ def _build_dashboard(
         num_panels, 1, figsize=(14, 10), sharex=True,
         gridspec_kw={"height_ratios": [1, 1, 1, 1], "hspace": 0.60},
     )
-    title = f"Field {field_id} — {year} Growing Season"
+    if weather_gap:
+        for ax in axes[1:]:
+            ax.axvspan(
+                weather_gap[0], weather_gap[1],
+                color="#888888", alpha=0.12, zorder=0,
+            )
+    title = f"{field_display_name or field_id} — {year} Growing Season"
     if location_prefix:
         title = f"{location_prefix} {title}"
     fig.suptitle(title, fontsize=14, fontweight="bold", y=0.98)
-    fig.subplots_adjust(top=0.82)
+    fig.subplots_adjust(top=0.82, bottom=0.17)
 
     subtitle_parts = []
     if crop_name:
         subtitle_parts.append(f"Crop: {crop_name}")
-    stage_descriptors = [f"{ev['label']} - {ev['descriptor']}" for ev in gdd_events if ev.get("descriptor")]
-    if stage_descriptors:
-        subtitle_parts.append(" | ".join(stage_descriptors))
-    fig.text(
-        0.5, 0.93, "  |  ".join(subtitle_parts),
-        fontsize=9, ha="center", va="top",
-        color="#555555",
-    )
+    subtitle_text = "  |  ".join(subtitle_parts)
 
     summary = _build_interpretive_summary(
         crop_name, gdd_events, ndvi_events, precip_events, temp_events,
     )
     if summary:
+        wrapped = "\n".join(textwrap.wrap(summary, width=130))
         fig.text(
-            0.5, 0.90, summary,
+            0.5, 0.945, wrapped,
             fontsize=7.5, ha="center", va="top",
             color="#666666", style="italic",
         )
@@ -868,7 +996,7 @@ def _build_dashboard(
             alpha=0.8, edgecolor="none", zorder=2,
         )
         ax1.plot(df["doy"], df["mean_ndvi"], color="#555555", linewidth=1.0, alpha=0.7, zorder=3, marker="o", markersize=2)
-        _annotate_events(ax1, gdd_events, y_anchor=0.9)
+        _annotate_events(ax1, all_gdd_events, y_anchor=0.9)
         _annotate_events(ax1, ndvi_events, y_anchor=0.75)
         ax1.set_ylabel("NDVI", fontsize=10)
         ax1.set_ylim(0, 1.05)
@@ -896,7 +1024,28 @@ def _build_dashboard(
         )
         ax2_twin.set_ylabel("Cumulative (mm)", fontsize=8, color="#0d47a1")
         ax2_twin.tick_params(axis="y", labelsize=7, colors="#0d47a1")
-        _annotate_events(ax2, gdd_events, y_anchor=0.9)
+        if avg_annual_precip:
+            _top = max(avg_annual_precip, float(df["precip_cumulative"].max())) * 1.17
+            ax2_twin.set_ylim(0, _top)
+            ax2_twin.axhline(
+                avg_annual_precip, color="#0d47a1", linestyle="--",
+                linewidth=0.8, alpha=0.5, zorder=2,
+            )
+            ax2_twin.text(
+                0.99, avg_annual_precip, f"Avg annual {avg_annual_precip:.0f} mm",
+                transform=ax2_twin.get_yaxis_transform(),
+                ha="right", va="bottom", fontsize=6, color="#0d47a1", alpha=0.8,
+            )
+        if weather_gap:
+            _last = df.iloc[-1]
+            ax2_twin.annotate(
+                f"{_last['precip_cumulative']:.0f} mm",
+                xy=(_last["doy"], _last["precip_cumulative"]),
+                xytext=(4, 4), textcoords="offset points",
+                fontsize=6, color="#0d47a1", fontweight="bold",
+                ha="left", va="bottom", zorder=6,
+            )
+        _annotate_events(ax2, all_gdd_events, y_anchor=0.9)
         heavy_rain_events = [ev for ev in precip_events if not ev.get("label", "").startswith("Dry spell")]
         dry_spell_events = [ev for ev in precip_events if ev.get("label", "").startswith("Dry spell")]
         _annotate_events(ax2, heavy_rain_events, y_anchor=0.7)
@@ -916,28 +1065,28 @@ def _build_dashboard(
         doy = df["doy"].values
         temp = df["T2M"].values
         ax3.fill_between(
-            doy, 0, temp, where=(temp >= 0),
-            color="#d4a017", alpha=0.45, zorder=2, label="Above 0°C",
+            doy, 32, temp, where=(temp >= 32),
+            color="#d4a017", alpha=0.45, zorder=2, label="Above 32°F",
         )
         ax3.fill_between(
-            doy, 0, temp, where=(temp < 0),
-            color="#00796b", alpha=0.45, zorder=2, label="Below 0°C",
+            doy, 32, temp, where=(temp < 32),
+            color="#00796b", alpha=0.45, zorder=2, label="Below 32°F",
         )
-        ax3.axhline(y=0, color="gray", linewidth=0.5, zorder=3)
-        heat_thresh = thresholds.get("heat_threshold_c", 35.0)
+        ax3.axhline(y=32, color="gray", linewidth=0.5, zorder=3)
+        heat_thresh = thresholds.get("heat_threshold_f", 95.0)
         ax3.axhline(y=heat_thresh, color="#d84315", linestyle="--", linewidth=0.8, alpha=0.7)
-        ax3.text(2, heat_thresh + 0.5, f"Heat threshold {heat_thresh}°C", fontsize=6, color="#d84315", alpha=0.7)
-        gdd_base_line = thresholds.get("gdd_base_c", 10.0)
+        ax3.text(2, heat_thresh + 1.0, f"Heat threshold {heat_thresh}°F", fontsize=6, color="#d84315", alpha=0.7)
+        gdd_base_line = thresholds.get("gdd_base_f", 50.0)
         ax3.axhline(y=gdd_base_line, color="#7b1fa2", linestyle="--", linewidth=0.8, alpha=0.7)
-        ax3.text(2, gdd_base_line + 0.5, f"GDD base {gdd_base_line}°C", fontsize=6, color="#7b1fa2", alpha=0.7)
-        ax3.set_ylim(top=max(temp.max(), heat_thresh) + 6)
-        _annotate_events(ax3, gdd_events, y_anchor=0.9)
+        ax3.text(2, gdd_base_line + 1.0, f"GDD base {gdd_base_line}°F", fontsize=6, color="#7b1fa2", alpha=0.7)
+        ax3.set_ylim(top=max(temp.max(), heat_thresh) * 1.17)
+        _annotate_events(ax3, all_gdd_events, y_anchor=0.9)
         other_temp_events = [ev for ev in temp_events if ev.get("label", "") not in ("Last frost", "First frost")]
         _annotate_events(ax3, other_temp_events, y_anchor=0.1, stack_upward=True)
-        ax3.set_ylabel("Temperature (°C)", fontsize=10)
+        ax3.set_ylabel("Temperature (°F)", fontsize=10)
     else:
         ax3.text(0.5, 0.5, "No temperature data", ha="center", va="center", transform=ax3.transAxes, fontsize=11, color="gray")
-        ax3.set_ylabel("Temperature (°C)", fontsize=10)
+        ax3.set_ylabel("Temperature (°F)", fontsize=10)
     ax3.set_title("Air Temperature", fontsize=11, fontweight="bold", pad=18)
 
     # ---- Panel 4: Cumulative GDD ----
@@ -957,24 +1106,65 @@ def _build_dashboard(
             linewidth=1.5, alpha=0.8, zorder=3,
         )
         max_cum = df["gdd_cumulative"].max()
-        ax4_twin.set_ylabel(f"Cumulative GDD (max {max_cum:.0f})", fontsize=8, color="#4a148c")
+        ax4_twin.set_ylabel("Cumulative GDD", fontsize=8, color="#4a148c")
         ax4_twin.tick_params(axis="y", labelsize=7, colors="#4a148c")
-        _annotate_events(ax4, gdd_events, y_anchor=0.9)
+        if avg_annual_gdd:
+            _top = max(avg_annual_gdd, float(max_cum)) * 1.17
+            ax4_twin.set_ylim(0, _top)
+            ax4_twin.axhline(
+                avg_annual_gdd, color="#4a148c", linestyle="--",
+                linewidth=0.8, alpha=0.5, zorder=2,
+            )
+            ax4_twin.text(
+                0.99, avg_annual_gdd, f"Avg annual {avg_annual_gdd:.0f} GDD",
+                transform=ax4_twin.get_yaxis_transform(),
+                ha="right", va="bottom", fontsize=6, color="#4a148c", alpha=0.8,
+            )
+        if weather_gap:
+            _last = df.iloc[-1]
+            ax4_twin.annotate(
+                f"{_last['gdd_cumulative']:.0f} GDD",
+                xy=(_last["doy"], _last["gdd_cumulative"]),
+                xytext=(4, 4), textcoords="offset points",
+                fontsize=6, color="#4a148c", fontweight="bold",
+                ha="left", va="bottom", zorder=6,
+            )
+        _annotate_events(ax4, all_gdd_events, y_anchor=0.9)
         ax4.set_ylabel("Daily GDD", fontsize=10)
-        ax4.set_xlabel("Day of Year", fontsize=10)
+        ax4.set_xlabel("Month", fontsize=10)
     else:
         ax4.text(0.5, 0.5, "No weather data for GDD", ha="center", va="center", transform=ax4.transAxes, fontsize=11, color="gray")
         ax4.set_ylabel("Daily GDD", fontsize=10)
-        ax4.set_xlabel("Day of Year", fontsize=10)
+        ax4.set_xlabel("Month", fontsize=10)
     ax4.set_title("Cumulative Growing Degree Days", fontsize=11, fontweight="bold", pad=18)
 
     # ---- Shared x-axis ----
     if doy_all:
         x_min, x_max = max(1, min(doy_all) - 5), min(366, max(doy_all) + 5)
+        if weather_gap:
+            x_max = max(x_max, min(366, weather_gap[1] + 5))
         for ax in axes:
             ax.set_xlim(x_min, x_max)
             ax.grid(True, axis="x", alpha=0.15)
             ax.grid(True, axis="y", alpha=0.2)
+
+    # Month-based x-axis ticks
+    _month_starts = [date(year, m, 1).timetuple().tm_yday for m in range(1, 13)]
+    _month_labels = [date(year, m, 1).strftime("%b") for m in range(1, 13)]
+    for ax in axes:
+        ax.set_xticks(_month_starts)
+        ax.set_xticklabels(_month_labels, fontsize=8)
+
+    if weather_gap and doy_all:
+        g_start, g_end = weather_gap
+        vis_mid = (min(g_end, x_max) + max(g_start, x_min)) / 2
+        for ax in axes[1:]:
+            ax.text(
+                vis_mid, 0.5, "Weather gap",
+                transform=ax.get_xaxis_transform(),
+                ha="center", va="center",
+                fontsize=6, fontweight="bold", color="#888888", zorder=5,
+            )
 
     for i in range(num_panels):
         axes[i].tick_params(axis="y", labelsize=8)
@@ -990,6 +1180,11 @@ def _build_dashboard(
         )
         cax.tick_params(labelsize=7)
 
+    fig.text(
+        0.5, 0.008, _build_source_footer(crop_name, weather_gap, subtitle_text),
+        ha="center", va="bottom", fontsize=6.2, color="#777777",
+    )
+
     return fig
 
 
@@ -1001,9 +1196,8 @@ def _build_interpretive_summary(
     temp_events: list[dict],
 ) -> str:
     context_parts: list[str] = []
-    impact_parts: list[str] = []
+    candidates: list[dict] = []  # each: {"score": float, "doy": int, "text": str}
     _PROXIMITY = 5
-    _to_doy = lambda d: d.timetuple().tm_yday if hasattr(d, "timetuple") else 0
 
     sorted_events = sorted(
         [ev for ev in gdd_events if ev.get("doy") and ev.get("label") and ev.get("descriptor")],
@@ -1014,7 +1208,6 @@ def _build_interpretive_summary(
         end_doy = sorted_events[i + 1]["doy"] - 1 if i + 1 < len(sorted_events) else 366
         stage_ranges.append({
             "label": ev["label"],
-            "descriptor": ev.get("descriptor", ""),
             "start_doy": ev["doy"],
             "end_doy": end_doy,
         })
@@ -1031,77 +1224,104 @@ def _build_interpretive_summary(
         return [sr for sr in stage_ranges
                 if sr["start_doy"] - _PROXIMITY <= end and sr["end_doy"] + _PROXIMITY >= start]
 
-    def _stage_label(sr: dict) -> str:
-        desc = sr.get("descriptor", "")
-        return f"{sr['label']} ({desc})" if desc else sr["label"]
+    def _names(stages: list[dict]) -> str:
+        return " → ".join(s["label"] for s in stages)
 
-    # Peak NDVI with full stage label
+    # Peak NDVI context (not counted toward the impact cap)
     for ev in ndvi_events:
         label = ev.get("label", "")
         if "peak" in label.lower():
             doy = ev.get("doy", 0)
             sr = _find_stage(doy)
             val = label.replace("Peak NDVI = ", "")
-            stage_info = f" during {_stage_label(sr)}" if sr else ""
+            stage_info = f" during {sr['label']}" if sr else ""
             context_parts.append(f"Peak NDVI {val}{stage_info}.")
             break
 
-    # Dry spells during moisture-critical stages
+    # Dry spells during any growth stage
     for ev in precip_events:
         label = ev.get("label", "")
         if "dry spell" in label.lower():
             doy_start = ev.get("doy", 0)
             doy_end = ev.get("doy_end", doy_start)
             stages = _stage_span(doy_start, doy_end)
-            critical = [s for s in stages if any(w in s.get("descriptor", "").lower() for w in ("water", "moisture", "critical"))]
-            if critical:
-                stage_names = " → ".join(_stage_label(s) for s in critical)
-                days = label.replace("Dry spell\n", "").replace(" days", "")
-                impact_parts.append(f"A {days}-day dry spell may have stressed {stage_names}.")
+            if not stages:
+                continue
+            days = int(label.replace("Dry spell\n", "").replace(" days", "").strip() or 0)
+            candidates.append({
+                "score": float(days), "doy": doy_start,
+                "text": f"A {days}-day dry spell during {_names(stages)}.",
+            })
 
-    # Heat waves during heat-sensitive stages
+    # Heavy rain during any growth stage
+    for ev in precip_events:
+        label = ev.get("label", "")
+        if "heavy rain" in label.lower():
+            doy_start = ev.get("doy", 0)
+            doy_end = ev.get("doy_end", doy_start)
+            stages = _stage_span(doy_start, doy_end)
+            if not stages:
+                continue
+            mm_raw = label.split("\n")[-1].split(",")[-1].replace("mm", "").strip()
+            mm_val = float(mm_raw) if mm_raw.replace(".", "").isdigit() else 0.0
+            candidates.append({
+                "score": mm_val, "doy": doy_start,
+                "text": f"Heavy rain ({mm_raw} mm) during {_names(stages)}.",
+            })
+
+    # Heat waves during any growth stage
     for ev in temp_events:
         label = ev.get("label", "")
         if "heat wave" in label.lower():
             doy_start = ev.get("doy", 0)
             doy_end = ev.get("doy_end", doy_start)
             stages = _stage_span(doy_start, doy_end)
-            sensitive = [s for s in stages if any(w in s.get("descriptor", "").lower() for w in ("heat", "sensitive"))]
-            if sensitive:
-                stage_names = " → ".join(_stage_label(s) for s in sensitive)
-                days = label.replace("Heat wave\n", "").replace(" days", "")
-                impact_parts.append(f"A {days}-day heat wave likely stressed {stage_names}.")
+            if not stages:
+                continue
+            days = int(label.replace("Heat wave\n", "").replace(" days", "").strip() or 0)
+            candidates.append({
+                "score": float(days * 2), "doy": doy_start,
+                "text": f"A {days}-day heat wave during {_names(stages)}.",
+            })
 
-    # Cool periods during early vegetative stages
+    # Cool periods during any growth stage (lowest priority)
     for ev in temp_events:
         label = ev.get("label", "")
         if "cool period" in label.lower():
             doy_start = ev.get("doy", 0)
             doy_end = ev.get("doy_end", doy_start)
             stages = _stage_span(doy_start, doy_end)
-            early_veg = [s for s in stages if any(w in s.get("descriptor", "").lower() for w in ("vegetative", "nodulation", "establish", "emergence"))]
-            if early_veg:
-                stage_names = " → ".join(_stage_label(s) for s in early_veg)
-                days = label.replace("Cool period\n", "").replace(" days", "")
-                impact_parts.append(f"A {days}-day cool spell may have slowed {stage_names}.")
+            if not stages:
+                continue
+            days = int(label.replace("Cool period\n", "").replace(" days", "").strip() or 0)
+            candidates.append({
+                "score": float(days) * 0.3, "doy": doy_start,
+                "text": f"A {days}-day cool spell during {_names(stages)}.",
+            })
 
-    # Frost only if it falls within a growth stage (before final maturity)
-    last_stage = stage_ranges[-1] if stage_ranges else None
+    # Frost during any growth stage (always significant)
     for ev in temp_events:
         label = ev.get("label", "")
         if "last frost" in label.lower() or "first frost" in label.lower():
             doy = ev.get("doy", 0)
             sr = _find_stage(doy)
-            if sr and sr != last_stage:
-                impact_parts.append(f"{label} likely arrived during {_stage_label(sr)}.")
+            if sr:
+                candidates.append({
+                    "score": 1000.0, "doy": doy,
+                    "text": f"{label} during {sr['label']}.",
+                })
 
-    if impact_parts:
+    if candidates:
+        selected = sorted(candidates, key=lambda c: c["score"], reverse=True)[:5]
+        selected.sort(key=lambda c: c["doy"])
+        impact_parts = [c["text"] for c in selected]
         return " ".join(context_parts + impact_parts)
     return "No major weather impacts detected during key growth stages this season."
 
 
 def _annotate_events(ax, events: list[dict], y_anchor: float = 0.85, stack_upward: bool = False):
-    used_ys: dict[int, float] = {}
+    _PROXIMITY = 12
+    placed: list[tuple[float, int]] = []  # (span_mid, stack_level)
     direction = 1 if stack_upward else -1
     for ev in events:
         doy = ev["doy"]
@@ -1109,21 +1329,26 @@ def _annotate_events(ax, events: list[dict], y_anchor: float = 0.85, stack_upwar
         span_mid = doy if doy_end is None else (doy + doy_end) / 2
         offset_y = 0.05
         base_y = y_anchor
-        col = used_ys.get(span_mid, 0) * offset_y * 2
-        used_ys[span_mid] = used_ys.get(span_mid, 0) + 1
-        y_pos = base_y + direction * col
+        col = 0
+        for prev_mid, prev_col in placed:
+            if abs(span_mid - prev_mid) <= _PROXIMITY:
+                col = max(col, prev_col + 1)
+        placed.append((span_mid, col))
+        y_pos = base_y + direction * col * offset_y * 2
         label_color = ev.get("label_color", ev["color"])
         if doy_end is not None:
-            ax.axvspan(doy, doy_end, color=ev["color"], alpha=0.12, zorder=1)
+            ax.axvspan(doy, doy_end, color=ev["color"], alpha=0.12, zorder=3)
         else:
-            ax.axvline(x=doy, color=ev["color"], linewidth=0.8, linestyle=":", alpha=0.6, zorder=1)
+            _ls = "--" if ev.get("projected") else ":"
+            _alpha = 0.5 if ev.get("projected") else 0.6
+            ax.axvline(x=doy, color=ev["color"], linewidth=0.8, linestyle=_ls, alpha=_alpha, zorder=3)
         ax.annotate(
             ev["label"], xy=(span_mid, y_pos),
             fontsize=5.5, color=label_color,
             ha="center", va="bottom",
             xycoords=ax.get_xaxis_transform(),
             bbox=dict(boxstyle="round,pad=0.15", facecolor="white", edgecolor=label_color, alpha=0.7, linewidth=0.5),
-            zorder=5,
+            zorder=6,
         )
 
 
@@ -1137,6 +1362,7 @@ def generate_field_year_dashboard(
     data_root: str | Path | None = None,
     skill_base: str | Path | None = None,
     output_path: str | Path | None = None,
+    grower_slug: str | None = None,
 ) -> Path:
     if data_root is None:
         data_root = os.environ.get("DATA_PIPELINE_DATA_ROOT")
@@ -1152,32 +1378,81 @@ def generate_field_year_dashboard(
         skill_base = Path(__file__).resolve().parents[3]
     skill_base = Path(skill_base)
 
-    grower_slug, farm_slug, field_path = _resolve_field(runtime_base, field_id)
+    grower_slug, farm_slug, field_path = _resolve_field(runtime_base, field_id, grower_slug)
     farm_dir = field_path.parents[1]
     farm_tables_dir = farm_dir / "derived" / "tables"
     location, fips = _resolve_field_location(farm_dir, field_path.name)
-    location_prefix = f"{grower_slug} — {location} —" if location else f"{grower_slug} —"
+    grower_dir = runtime_base / "growers" / grower_slug
+    grower_display = _load_display_name(grower_dir / "grower.json", fallback=grower_slug)
+    field_display = _load_display_name(field_path / "field.json", fallback=field_path.name)
+    location_prefix = f"{grower_display} — {location} —" if location else f"{grower_display} —"
 
     print(f"grower: {grower_slug}, farm: {farm_slug}, field: {field_path.name}")
 
-    crop_name = _load_field_cdl(farm_tables_dir, year, field_id)
-    if crop_name:
-        print(f"dominant CDL crop: {crop_name}")
-    else:
-        print("warning: could not determine CDL crop", file=sys.stderr)
+    cdl_crop = _load_field_cdl(farm_tables_dir, year, field_id)
+    boundary_crop = _load_boundary_crop(field_path)
+    crop_name = boundary_crop or cdl_crop
+    if boundary_crop:
+        print(f"boundary-declared crop: {boundary_crop}")
+    if cdl_crop:
+        print(f"dominant CDL crop: {cdl_crop}")
+    if not crop_name:
+        print("warning: could not determine crop", file=sys.stderr)
 
     thresholds = _load_crop_thresholds(crop_name or "Unknown")
 
-    weather = _load_field_weather(field_path)
-    if weather is not None:
-        weather_year = weather[weather["date"].dt.year == year].copy()
-        if weather_year.empty:
-            weather_year = weather[weather["date"].dt.year == year - 1].copy()
+    weather_full = _load_field_weather(field_path)
+    if weather_full is not None:
+        for col in ("T2M", "T2M_MAX", "T2M_MIN"):
+            weather_full[col] = weather_full[col] * 9.0 / 5.0 + 32.0
+    weather_gap = None
+    avg_annual_gdd: float | None = None
+    avg_annual_precip: float | None = None
+    stage_avg_doy: dict[str, int] = {}
+    if weather_full is not None:
+        wf = weather_full.copy()
+        wf["date"] = pd.to_datetime(wf["date"])
+        wf["year"] = wf["date"].dt.year
+        valid = wf.dropna(subset=["T2M", "T2M_MAX", "T2M_MIN", "PRECTOTCORR"])
+        complete = [y for y, g in valid.groupby("year") if len(g) >= 300]
+        if complete:
+            ann_gdd_vals: list[float] = []
+            ann_precip_vals: list[float] = []
+            stage_doys: dict[str, list[int]] = {
+                s[0]: [] for s in thresholds.get("stages", [])
+            }
+            for cy in complete:
+                gy = valid[valid["year"] == cy].sort_values("date")
+                gdd_y = _compute_gdd(gy, thresholds["gdd_base_f"], thresholds["gdd_cap_f"])
+                ann_gdd_vals.append(float(gdd_y["gdd"].sum()))
+                ann_precip_vals.append(float(gy["PRECTOTCORR"].sum()))
+                for stage_name, gdd_target, _desc in thresholds.get("stages", []):
+                    cross = gdd_y[gdd_y["gdd_cumulative"] >= gdd_target]
+                    if not cross.empty:
+                        d = cross.iloc[0]["date"]
+                        stage_doys[stage_name].append(
+                            d.timetuple().tm_yday if hasattr(d, "timetuple") else 0
+                        )
+            if ann_gdd_vals:
+                avg_annual_gdd = sum(ann_gdd_vals) / len(ann_gdd_vals)
+            if ann_precip_vals:
+                avg_annual_precip = sum(ann_precip_vals) / len(ann_precip_vals)
+            for sname, doys in stage_doys.items():
+                if doys:
+                    stage_avg_doy[sname] = int(round(sum(doys) / len(doys)))
+
+    weather = None
+    if weather_full is not None:
+        weather_year = weather_full[weather_full["date"].dt.year == year].copy()
         weather = weather_year if not weather_year.empty else None
+        weather_gap = _detect_weather_gap(weather_year)
+        if weather is not None:
+            weather = weather.dropna(subset=["T2M", "T2M_MAX", "T2M_MIN", "PRECTOTCORR"])
+            weather = weather if not weather.empty else None
 
     weather_gdd = None
     if weather is not None:
-        weather_gdd = _compute_gdd(weather, thresholds["gdd_base_c"], thresholds["gdd_cap_c"])
+        weather_gdd = _compute_gdd(weather, thresholds["gdd_base_f"], thresholds["gdd_cap_f"])
 
     ndvi = _try_load_ndvi(field_path, year)
 
@@ -1205,10 +1480,24 @@ def generate_field_year_dashboard(
 
     maturity_info = _load_county_maturity(data_root, fips, year, crop_name)
 
+    reached_stages = {ev["label"] for ev in gdd_events if ev.get("descriptor")}
+    projected_gdd_events: list[dict] = []
+    for stage_name, _gdd_target, desc in thresholds.get("stages", []):
+        if stage_name not in reached_stages and stage_name in stage_avg_doy:
+            projected_gdd_events.append({
+                "doy": stage_avg_doy[stage_name],
+                "label": f"{stage_name} (proj)",
+                "descriptor": desc,
+                "color": "#333333",
+                "label_color": "#333333",
+                "projected": True,
+            })
+
     fig = _build_dashboard(
         field_id=field_id,
         year=year,
         location_prefix=location_prefix,
+        field_display_name=field_display,
         crop_name=crop_name,
         weather=weather,
         weather_gdd=weather_gdd,
@@ -1217,8 +1506,12 @@ def generate_field_year_dashboard(
         precip_events=precip_events,
         temp_events=temp_events,
         gdd_events=gdd_events,
+        projected_gdd_events=projected_gdd_events,
         thresholds=thresholds,
         maturity_info=maturity_info,
+        weather_gap=weather_gap,
+        avg_annual_gdd=avg_annual_gdd,
+        avg_annual_precip=avg_annual_precip,
     )
 
     if output_path is None:
@@ -1240,6 +1533,11 @@ def main():
     )
     parser.add_argument(
         "--field-id", required=True, help="Field identifier (e.g., OSM_1428284928)"
+    )
+    parser.add_argument(
+        "--grower-slug",
+        default=None,
+        help="Grower slug to scope field resolution when field ids collide across growers",
     )
     parser.add_argument(
         "--year", type=int, required=True, help="Target year (e.g., 2024)"
@@ -1266,6 +1564,7 @@ def main():
         data_root=args.data_root,
         skill_base=args.skill_base,
         output_path=args.output,
+        grower_slug=args.grower_slug,
     )
 
 

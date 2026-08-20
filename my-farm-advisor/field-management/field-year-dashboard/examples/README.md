@@ -6,7 +6,7 @@ Generates a 4-panel dashboard for a single field and growing season:
 
 1. **NDVI Dynamics** — colored bars (RdYlGn colormap) with a connected line, rapid green-up bands, peak/decline events
 2. **Daily Precipitation** — blue bars with cumulative line overlay, heavy rain bands, dry spell spans
-3. **Air Temperature** — filled area (above/below 0°C), heat wave spans, cool period spans, frost markers, GDD base and heat threshold reference lines
+3. **Air Temperature** — filled area (above/below 32°F), heat wave spans, cool period spans, frost markers, GDD base and heat threshold reference lines
 4. **Cumulative GDD** — daily outlined bars plus cumulative line, growth stage annotations
 
 All panels share a common Day-of-Year x-axis.
@@ -25,7 +25,7 @@ All panels share a common Day-of-Year x-axis.
 | NDVI | `satellite/sentinel/manifest.json` + NDVI TIFFs |
 | CDL crop | `{farm}/derived/tables/{farm}_{year}_cdl.csv` |
 | Maturity-by-FIPS | `{DATA_PIPELINE_DATA_ROOT}/data-pipeline/shared/` parquet files |
-| Crop thresholds | Inline `CROP_THRESHOLDS` (Soybeans: base 10°C, cap 30°C, heat threshold 33°C) |
+| Crop thresholds | Inline `CROP_THRESHOLDS` (Soybeans: base 50°F, cap 86°F, heat threshold 91°F) |
 
 ## Generated dashboard
 
