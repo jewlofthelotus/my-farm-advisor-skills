@@ -18,6 +18,9 @@ sys.path.insert(0, str(_SCRIPTS_DIR / "lib"))
 sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from nasa_power import WEATHER_COLUMNS, assign_power_grid, build_zarr_grid_weather, query_api_point_weather
+
+# Columns persisted to every weather CSV.
+WEATHER_OUTPUT_COLUMNS = ["field_id", "lat", "lon", "grid_key", "date", *WEATHER_COLUMNS]
 from paths import farm_boundary_path, farm_manifest_dir, farm_weather_path, field_weather_path
 from reporting_bootstrap import ensure_canonical_data_tree, field_slug_map_from_inventory
 
@@ -114,6 +117,20 @@ def _write_weather_outputs(
             field_weather.to_csv(target, index=False)
 
 
+def _ensure_grid_key(weather_df: pd.DataFrame) -> pd.DataFrame:
+    if "grid_key" in weather_df.columns and weather_df["grid_key"].notna().any():
+        return weather_df
+    grid_info = assign_power_grid(
+        weather_df[["field_id", "lat", "lon"]].drop_duplicates("field_id"),
+        lat_column="lat",
+        lon_column="lon",
+    )
+    return cast(
+        pd.DataFrame,
+        weather_df.merge(grid_info[["field_id", "grid_key"]], on="field_id", how="left"),
+    )
+
+
 def _stage_weather_override(weather_csv: str, combined_output: Path) -> pd.DataFrame:
     override_path = _resolve_runtime_path(weather_csv)
     if not override_path.exists():
@@ -124,12 +141,12 @@ def _stage_weather_override(weather_csv: str, combined_output: Path) -> pd.DataF
     missing = [column for column in ["lat", "lon", "date", *WEATHER_COLUMNS] if column not in weather_df.columns]
     if missing:
         raise RuntimeError(f"weather CSV override missing columns: {missing}")
-    weather_df = cast(
-        pd.DataFrame,
-        weather_df[["field_id", "lat", "lon", "date", *WEATHER_COLUMNS]].copy(),
-    )
+    weather_df = _ensure_grid_key(weather_df)
+    missing_grid = [column for column in WEATHER_OUTPUT_COLUMNS if column not in weather_df.columns]
+    if missing_grid:
+        raise RuntimeError(f"weather CSV override missing columns after grid_key step: {missing_grid}")
     combined_output.parent.mkdir(parents=True, exist_ok=True)
-    weather_df.to_csv(combined_output, index=False)
+    weather_df[WEATHER_OUTPUT_COLUMNS].to_csv(combined_output, index=False)
     return weather_df
 
 
@@ -169,7 +186,7 @@ def _download_zarr_weather(
         frames.append(
             cast(
                 pd.DataFrame,
-                field_weather[["field_id", "lat", "lon", "date", *WEATHER_COLUMNS]].copy(),
+                field_weather[WEATHER_OUTPUT_COLUMNS].copy(),
             )
         )
         print("OK")
@@ -221,12 +238,19 @@ def _download_api_weather(
 
     if not all_weather:
         raise RuntimeError("No field weather data retrieved from NASA POWER API")
-    return cast(
+    weather_df = cast(
         pd.DataFrame,
         pd.concat(all_weather, ignore_index=True)
         .sort_values(["field_id", "date"])
         .reset_index(drop=True),
     )
+    grid_info = assign_power_grid(
+        weather_df[["field_id", "lat", "lon"]].drop_duplicates("field_id"),
+        lat_column="lat",
+        lon_column="lon",
+    )
+    weather_df = weather_df.merge(grid_info[["field_id", "grid_key"]], on="field_id", how="left")
+    return cast(pd.DataFrame, weather_df[WEATHER_OUTPUT_COLUMNS])
 
 
 def main():
@@ -270,8 +294,9 @@ def main():
 
     if combined_output.exists() and not force:
         weather_df = pd.read_csv(combined_output, parse_dates=["date"])
+        weather_df = _ensure_grid_key(weather_df)
         _write_weather_outputs(
-            weather_df,
+            weather_df[WEATHER_OUTPUT_COLUMNS],
             combined_output=combined_output,
             grower_slug=grower_slug,
             farm_slug=farm_slug,
