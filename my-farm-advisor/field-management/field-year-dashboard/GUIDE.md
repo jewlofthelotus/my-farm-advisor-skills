@@ -20,7 +20,7 @@ Use this when you need a single-field visual summary of one growing season showi
 
 | Input | Source | Description |
 |-------|--------|-------------|
-| `field_id` | CLI or function arg | Unique field identifier (e.g., `OSM_1428284928`). The script discovers the field by scanning the runtime growers tree. |
+| `field_id` | CLI or function arg | Unique field identifier (e.g., `OSM_1428284928`). The script discovers the field by scanning the runtime growers tree. Use `grower_slug`/`--grower-slug` when field ids collide across growers (common for CDL-derived grape/fruit parcels). |
 | `year` | CLI or function arg | Target growing season (e.g., `2024`) |
 | `DATA_PIPELINE_DATA_ROOT` | Env var | Absolute path to the runtime data root |
 
@@ -28,7 +28,7 @@ Use this when you need a single-field visual summary of one growing season showi
 
 | Panel | Source file | Notes |
 |-------|-------------|-------|
-| CDL crop | `{farm}/derived/tables/*_{year}_cdl.csv` | Dominant crop by pixel percentage |
+| CDL crop | `{farm}/derived/tables/*_{year}_cdl.csv` | Dominant crop by pixel percentage. Falls back to the most recent available year's table when the requested year's archive is missing (CDL lags; e.g. current-year runs use last year's classification). |
 | Weather | `{field}/weather/daily_weather.csv` | Columns: date, T2M, T2M_MAX, T2M_MIN, PRECTOTCORR |
 | NDVI | `{field}/satellite/sentinel/manifest.json` + NDVI TIFFs, or CSV with `date` + `mean_ndvi` | Scans manifest, NDVI rasters, or CSVs |
 | Crop strategy | `strategy/crop-strategy/resources/2026-usa-{crop}.md` | Thresholds extracted from skill resources |
@@ -61,12 +61,14 @@ A single PNG saved to `{field}/derived/reports/{year}_field_dashboard.png`.
 
 Thresholds are derived from the strategy resource files under `strategy/crop-strategy/resources/`. Each crop defines:
 
-- GDD base temperature and upper cap (Celsius)
+- GDD base temperature and upper cap (Fahrenheit)
 - Heat-stress temperature threshold
 - Frost-sensitivity threshold
 - Growth stages with approximate GDD ranges
 
-If a CDL crop is not recognized or CDL data is missing, generic fallback thresholds (GDD base 10°C, cap 30°C) are used.
+If a CDL crop is not recognized or CDL data is missing, generic fallback thresholds (GDD base 50°F, cap 86°F) are used.
+
+Crops with defined thresholds: Corn, Soybeans, Cotton, Winter Wheat, Sorghum, and Grapes (GDD base 50°F with Budbreak/Bloom/Fruit Set/Veraison/Harvest stage GDD targets). Grape GDD targets align with the 50°F-base targets used by the row-crop-intelligence dashboards.
 
 ## CLI usage
 
@@ -84,6 +86,7 @@ Optional flags:
   --data-root /custom/path   # Override DATA_PIPELINE_DATA_ROOT
   --skill-base /path/skills  # Path to my-farm-advisor skill root
   --output /custom/output.png # Override output path
+  --grower-slug my-grower    # Scope field resolution to one grower
 ```
 
 ## Python API
@@ -94,6 +97,7 @@ from field_year_dashboard import generate_field_year_dashboard
 path = generate_field_year_dashboard(
     field_id="OSM_1428284928",
     year=2024,
+    grower_slug="my-grower",  # optional; disambiguates colliding field ids
 )
 print(f"Dashboard saved: {path}")
 ```
@@ -108,7 +112,7 @@ print(f"Dashboard saved: {path}")
 | Heavy rain | PRECTOTCORR > 25 mm | Precip |
 | Dry spell | 10+ consecutive days < 1 mm | Precip |
 | Heat stress | T2M_MAX > crop threshold | Temp |
-| Cool period | 3+ days T2M_MAX < 20°C (May–Jul) | Temp |
+| Cool period | 3+ days T2M_MAX < 68°F (May–Jul) | Temp |
 | Spring/fall frost | T2M_MIN ≤ frost threshold | Temp |
 | Growth stage | Cumulative GDD crosses stage threshold | GDD |
 
@@ -117,6 +121,8 @@ print(f"Dashboard saved: {path}")
 - NDVI panel uses polynomial trend fitting (degree ≤ 3) when 3+ acquisitions exist.
 - The shared x-axis spans the earliest to latest data point across all panels.
 - If a data source is missing, the panel shows a placeholder message and remaining panels still render.
+- Weather rows with missing temperature/precipitation values (e.g., trailing NaN-padded days past the NASA POWER archive end in current-year files) are dropped before plotting so partial-season years render cleanly. When a ≥2-day NaN span exists in the raw year frame, the three weather panels (precip, temperature, GDD) get a grey `Weather gap` band shading the missing DOY range (same convention as the row-crop-intelligence dashboards).
+- A `Sources` footer is drawn at the bottom of every dashboard. A `Generated: <iso timestamp>` line sits above the list with a blank line between; the list covers the actual data sources (Sentinel-2 L2A NDVI, NASA POWER weather, GDD method, CDL crop). When a weather gap is present, the footer adds a caveat explaining the grey band and the NASA POWER archive lag.
 - Crop strategy resource files are read for reference only; the threshold values used in plotting are defined inline and should be updated when new resource years are added.
 - The GDD panel includes county-level maturity context (corn RM or soybean MG) loaded from maturity-by-FIPS shared parquet files when available.
 

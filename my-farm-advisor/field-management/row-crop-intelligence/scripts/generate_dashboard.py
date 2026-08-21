@@ -42,7 +42,64 @@ CROP_CONFIG = {
             "VE": 120, "V6": 500, "VT": 1130, "R1": 1400, "R2": 1650,
             "R3": 1880, "R4": 2150, "R5": 2450, "R6": 2700
         },
+        "stage_descriptions": {
+            "VE": "Early Vegetative", "V6": "Vegetative", "VT": "Tasseling",
+            "R1": "Silking", "R2": "Blister", "R3": "Milk",
+            "R4": "Dough", "R5": "Dent", "R6": "Maturing"
+        },
+        "phase_anchors": {
+            "establishing_end": "VE",
+            "building_end": "R1",
+            "reproductive_early_end": "R4",
+            "full_canopy": "VT"
+        },
         "crop_name": "Corn",
+        "match_all": False,
+        "sensitive_stages": ["VT", "R1", "R2"],
+        "phase_descriptions": {
+            "establishing": "Emergence Phase (pre-canopy, flagging suppressed)",
+            "building": "NDVI Declining",
+            "reproductive_early": "Early Grain Fill",
+            "reproductive_late": "Natural Senescence (flagging suppressed)"
+        },
+        "kpi_units": {"ndvi": "", "gdd": "\u00b0F-days", "precip": "in", "awc": "in", "om": "%"}
+    },
+    "grape": {
+        "stress_threshold": 0.30,
+        "watch_threshold": 0.45,
+        "ndvi_decline_warning_pct": 5.0,
+        "ndvi_decline_critical_pct": 10.0,
+        "gdd_base_temp_f": 50.0,
+        "gdd_target": 2053,
+        "precip_significant_in": 0.1,
+        "precip_significant_mm": 2.54,
+        "growth_stages": {
+            "Budbreak": 59, "Bloom": 298, "Fruit Set": 473,
+            "Veraison": 1401, "Harvest": 2053
+        },
+        "stage_descriptions": {
+            "Budbreak": "Dormancy Break", "Bloom": "Flowering",
+            "Fruit Set": "Berry Set", "Veraison": "Ripening", "Harvest": "Maturity"
+        },
+        "phase_anchors": {
+            "establishing_end": "Budbreak",
+            "building_end": "Bloom",
+            "reproductive_early_end": "Veraison",
+            "full_canopy": "Bloom"
+        },
+        "crop_name": "Grapes",
+        "match_all": True,
+        "sensitive_stages": ["Bloom", "Fruit Set", "Veraison"],
+        "stage_colors": {
+            "Budbreak": "#8BC34A", "Bloom": "#FFC107",
+            "Fruit Set": "#FF9800", "Veraison": "#9C27B0", "Harvest": "#607D8B"
+        },
+        "phase_descriptions": {
+            "establishing": "Dormancy Break (pre-budbreak, flagging suppressed)",
+            "building": "NDVI Declining",
+            "reproductive_early": "Ripening",
+            "reproductive_late": "Late Season / Pre-Harvest (flagging suppressed)"
+        },
         "kpi_units": {"ndvi": "", "gdd": "\u00b0F-days", "precip": "in", "awc": "in", "om": "%"}
     }
 }
@@ -89,6 +146,30 @@ def read_field_boundary(field_dir):
         f = fc["features"][0]
         return {"type": "Feature", "geometry": f["geometry"], "properties": f.get("properties", {})}
     return None
+
+def detect_crop_type(grower_root):
+    """Infer the default crop config from the grower's field boundaries.
+
+    Uses CDL crop metadata stamped on each field boundary (cdl_crop_code / crop_name).
+    Returns the name of a CROP_CONFIG key ("grape" for vineyard fields, else "corn"),
+    falling back to "corn" when no boundaries are available.
+    """
+    grape_count = 0
+    total = 0
+    for farm_root in farm_paths(grower_root):
+        for field_dir in field_paths(farm_root):
+            boundary = read_field_boundary(field_dir)
+            if not boundary:
+                continue
+            total += 1
+            props = boundary.get("properties", {})
+            code = props.get("cdl_crop_code")
+            name = str(props.get("crop_name") or "").lower()
+            if code == 69 or "grape" in name:
+                grape_count += 1
+    if total and grape_count / total >= 0.5:
+        return "grape"
+    return "corn"
 
 def read_ndvi_card_summary(field_dir):
     path = field_dir / "derived" / "summaries" / "ndvi_card_summary.json"
@@ -422,11 +503,64 @@ def compute_weather_summaries(weather_records):
         if len(last_rain_all):
             days_since_rain = (today - last_rain_all.iloc[-1]["date"].date()).days
 
+    # Compute per-stage historical avg crossing DOY from complete historical years
+    stage_avg_doy: dict[str, int] = {}
+    if len(historical):
+        complete_years = [y for y, g in historical.groupby(historical["date"].dt.year) if len(g) >= 300]
+        all_stages = set()
+        for cc in CROP_CONFIG.values():
+            for sname in cc.get("growth_stages", {}):
+                all_stages.add(sname)
+        for stage_name in all_stages:
+            doys: list[int] = []
+            for cy in complete_years:
+                ydf = historical[historical["date"].dt.year == cy].sort_values("date")
+                default_planting = pd.Timestamp(f"{cy}-04-20")
+                frost_rows = ydf[(ydf["T2M_MIN"] <= 0.0) & (ydf["date"].dt.dayofyear <= 182)]
+                if not frost_rows.empty:
+                    last_frost = frost_rows["date"].max()
+                    planting_date = last_frost if last_frost > default_planting else default_planting
+                else:
+                    planting_date = default_planting
+                post_planting = ydf[ydf["date"] >= planting_date]
+                cum = 0.0
+                for _, row in post_planting.iterrows():
+                    cum += compute_gdd(float(row["T2M_MIN"]), float(row["T2M_MAX"]))
+                    # Check all crop configs for this stage name
+                    for cc in CROP_CONFIG.values():
+                        stages = cc.get("growth_stages", {})
+                        if stage_name in stages and cum >= stages[stage_name]:
+                            doys.append(row["date"].timetuple().tm_yday)
+                            break
+                    else:
+                        continue
+                    break
+            if doys:
+                stage_avg_doy[stage_name] = int(round(sum(doys) / len(doys)))
+
     return {
         "gdd_accumulated": gdd_current,
         "gdd_normal": gdd_normal,
-        "days_since_significant_rain": days_since_rain
+        "days_since_significant_rain": days_since_rain,
+        "stage_avg_doy": stage_avg_doy,
     }
+
+def _ordered_stages(config):
+    """Return [(stage_name, gdd_threshold)] sorted ascending by GDD from config."""
+    stages = config.get("growth_stages", {})
+    if stages:
+        return sorted(stages.items(), key=lambda item: item[1])
+    return [("VE", 120), ("V6", 500), ("VT", 1130), ("R1", 1400),
+            ("R2", 1650), ("R3", 1880), ("R4", 2150), ("R5", 2450), ("R6", 2700)]
+
+
+def _anchor_gdd(config, anchor_key, fallback_name, fallback_gdd):
+    """Resolve a phase-anchor stage's GDD threshold from config, with fallback."""
+    anchors = config.get("phase_anchors", {})
+    stages = config.get("growth_stages", {})
+    name = anchors.get(anchor_key, fallback_name)
+    return stages.get(name, stages.get(fallback_name, fallback_gdd))
+
 
 def compute_growth_phase(weather_records, config):
     """Determine current growth phase from accumulated GDD (post-planting, base 50°F).
@@ -438,12 +572,12 @@ def compute_growth_phase(weather_records, config):
       stage_description – human-readable phase description, e.g. "Vegetative"
     """
     stages = config.get("growth_stages", {})
-    # Ordered stage list with GDD thresholds
-    ordered = [("VE", 120), ("V6", 500), ("VT", 1130), ("R1", 1400),
-               ("R2", 1650), ("R3", 1880), ("R4", 2150), ("R5", 2450), ("R6", 2700)]
+    descriptions = config.get("stage_descriptions", {})
+    # Ordered stage list with GDD thresholds (config-driven)
+    ordered = _ordered_stages(config)
     # Reproductive sub-window boundaries
-    R1_GDD = stages.get("R1", 1400)
-    R4_GDD = stages.get("R4", 2150)
+    R1_GDD = _anchor_gdd(config, "building_end", "R1", 1400)
+    R4_GDD = _anchor_gdd(config, "reproductive_early_end", "R4", 2150)
 
     if not weather_records:
         return {
@@ -487,7 +621,7 @@ def compute_growth_phase(weather_records, config):
         cum_gdd_f += max(0.0, avg_f - base_f)
 
     # Determine phase
-    VE_GDD = stages.get("VE", 120)
+    VE_GDD = _anchor_gdd(config, "establishing_end", "VE", 120)
     if cum_gdd_f < VE_GDD:
         phase = "establishing"
     elif cum_gdd_f < R1_GDD:
@@ -498,22 +632,24 @@ def compute_growth_phase(weather_records, config):
         phase = "reproductive_late"
 
     # Stage label: find the two adjacent thresholds that bracket cum_gdd_f
-    stage_label = "Pre-VE"
-    stage_description = "Emergence"
+    first_name = ordered[0][0]
+    last_name = ordered[-1][0]
+    stage_label = f"Pre-{first_name}"
+    stage_description = descriptions.get(first_name, "Emergence")
     for i, (sname, sthresh) in enumerate(ordered):
         if cum_gdd_f < sthresh:
             if i == 0:
                 stage_label = f"Planting–{sname}"
-                stage_description = "Emergence"
+                stage_description = descriptions.get(sname, "Emergence")
             else:
                 prev_name = ordered[i - 1][0]
                 stage_label = f"{prev_name}–{sname}"
-                stage_description = _stage_desc(prev_name)
+                stage_description = descriptions.get(prev_name, _stage_desc(prev_name))
             break
     else:
-        # Past R6
-        stage_label = "R6+"
-        stage_description = "Maturing"
+        # Past last stage
+        stage_label = f"{last_name}+"
+        stage_description = descriptions.get(last_name, "Maturing")
 
     return {
         "phase": phase,
@@ -539,12 +675,12 @@ def _stage_desc(stage_name):
 
 
 def healthy_threshold_for_stage(accumulated_gdd, config):
-    """Scale the Healthy (watch_threshold) by growth stage progress toward VT."""
-    stages = config["growth_stages"]
+    """Scale the Healthy (watch_threshold) by growth stage progress toward full canopy."""
+    full_canopy_gdd = _anchor_gdd(config, "full_canopy", "VT", 1130)
     full_threshold = config["watch_threshold"]
-    if accumulated_gdd >= stages["VT"]:
+    if accumulated_gdd >= full_canopy_gdd:
         return full_threshold
-    progress = accumulated_gdd / stages["VT"]
+    progress = accumulated_gdd / full_canopy_gdd if full_canopy_gdd else 1.0
     return full_threshold * max(progress, 0.3)
 
 
@@ -633,7 +769,7 @@ def read_crop_rotation(farm_root):
             result[row["field_id"]] = row.get("predicted_next_crop", "")
     return result
 
-def extract_field_data(field_dir, farm_root, data_root, current_crop=None, weather_cache=None):
+def extract_field_data(field_dir, farm_root, data_root, current_crop=None, weather_cache=None, crop_type="corn"):
     field_json_path = field_dir / "field.json"
     field_meta = {}
     if field_json_path.exists():
@@ -665,8 +801,7 @@ def extract_field_data(field_dir, farm_root, data_root, current_crop=None, weath
         area_acres = float(boundary["properties"].get("area_acres", 0))
     field_id = field_meta.get("field_slug") or (boundary or {}).get("properties", {}).get("field_id") or field_dir.name
 
-    crop_type = "corn"
-    cc = CROP_CONFIG["corn"]
+    cc = CROP_CONFIG.get(crop_type, CROP_CONFIG["corn"])
 
     # Compute growth phase from weather records (base-50°F GDD from planting date)
     growth_info = compute_growth_phase(weather, cc)
@@ -713,7 +848,8 @@ def extract_field_data(field_dir, farm_root, data_root, current_crop=None, weath
 
     field_data = {
         "id": field_id,
-        "name": field_id,
+        "name": field_meta.get("display_name") or field_id,
+        "display_name": field_meta.get("display_name", ""),
         "area_acres": round(area_acres, 1),
         "crop_type": crop_type,
         "geometry": boundary,
@@ -739,8 +875,8 @@ def extract_field_data(field_dir, farm_root, data_root, current_crop=None, weath
     }
     return field_data
 
-def build_summary(fields):
-    config = CROP_CONFIG["corn"]
+def build_summary(fields, crop_type="corn"):
+    config = CROP_CONFIG.get(crop_type, CROP_CONFIG["corn"])
     total = len(fields)
     critical = sum(1 for f in fields if f["current_risk"] == "critical")
     watch = sum(1 for f in fields if f["current_risk"] == "watch")
@@ -795,7 +931,7 @@ def _weather_to_columnar(records):
     return columnar
 
 
-def extract_all_field_data(grower_root, data_root):
+def extract_all_field_data(grower_root, data_root, crop_type="corn"):
     all_fields = []
     grower_name = grower_root.name
     weather_cache: dict[str, list[dict]] = {}
@@ -811,13 +947,15 @@ def extract_all_field_data(grower_root, data_root):
                 field_dir, farm_root, data_root,
                 current_crop=rotation_map.get(field_dir.name),
                 weather_cache=weather_cache,
+                crop_type=crop_type,
             )
             if fd["geometry"]:
                 all_fields.append(fd)
 
-    # Assign display names
+    # Assign display names (prefer field.json display_name, fallback to Field N)
     for i, fd in enumerate(all_fields, 1):
-        fd["name"] = f"Field {i}"
+        if not fd.get("display_name"):
+            fd["name"] = f"Field {i}"
 
     # Deduplicated columnar weather series keyed by grid_key
     weather_series = {
@@ -855,8 +993,8 @@ def download_d3():
 
 
 
-def build_html(data_json_str, d3_min_js, weather_series=None):
-    config = CROP_CONFIG["corn"]
+def build_html(data_json_str, d3_min_js, weather_series=None, crop_type="corn"):
+    config = CROP_CONFIG.get(crop_type, CROP_CONFIG["corn"])
     data = json.loads(data_json_str)
 
     fields_json = json.dumps(data["fields"], default=str)
@@ -878,6 +1016,8 @@ def build_html(data_json_str, d3_min_js, weather_series=None):
     template = template.replace("__CONFIG_JSON__", config_json)
     template = template.replace("__THRESHOLD_LABELS_JSON__", threshold_labels_json)
     template = template.replace("__CROP_CONFIG_JSON__", crop_config_json)
+    template = template.replace("__CROP_TYPE__", crop_type)
+    template = template.replace("__CROP_NAME__", config.get("crop_name", "Crop"))
     template = template.replace("__WEATHER_SERIES_JSON__", weather_series_json)
     return template
 
@@ -1005,12 +1145,12 @@ svg.icon-lg { width: 24px; height: 24px; }
   <div class="header">
     <div class="header-main">
       <div>
-        <h1><span class="grower-name">__GROWER_NAME__</span> - Corn Health Intelligence Dashboard</h1>
+        <h1><span class="grower-name">__GROWER_NAME__</span> Health Intelligence Dashboard</h1>
       </div>
       <div class="header-filters">
         <div class="filter-group">
           <label>Selected Field(s):</label>
-          <div id="field-filter-indicator">All Corn Fields</div>
+          <div id="field-filter-indicator">All Fields</div>
         </div>
         <div class="filter-group">
           <label>Year:</label>
@@ -1019,7 +1159,7 @@ svg.icon-lg { width: 24px; height: 24px; }
       </div>
     </div>
     <div class="header-subrow">
-      <div class="freshness">Generated: __GENERATED_AT__</div>
+      <div class="freshness">Generated: __GENERATED_AT__ &middot; Crop: __CROP_NAME__</div>
       <a class="header-legend-toggle" onclick="toggleLegend()">
         Dashboard Legend <span class="chevron" id="legend-chevron">&#9654;</span>
       </a>
@@ -1036,6 +1176,7 @@ svg.icon-lg { width: 24px; height: 24px; }
           <div><span class="method-label">GDD:</span> base 50&deg;F from daily Tmin/Tmax</div>
           <div><span class="method-label">Soil:</span> NRCS SSURGO (AWS, OM%)</div>
           <div><span class="method-label">Weather:</span> NASA POWER daily <span class="source-lag">(~2mo lag)</span></div>
+          <div><span class="method-label">Note:</span> NASA POWER reanalysis (MERRA-2, 0.5&deg; grid) may underestimate local temperature extremes, especially near large water bodies or complex terrain.</div>
         </div>
       </div>
       <div class="header-legend-hint"><em><b>Click any data point on a chart for details.</b> On the map, clicking a field filters the whole dashboard instead.</em></div>
@@ -1053,7 +1194,8 @@ svg.icon-lg { width: 24px; height: 24px; }
     </div>
     <div class="map-action-col">
       <div class="map-card">
-        <h3>Field Risk Map — Click to Filter<span class="map-legend" id="map-legend"></span></h3>
+        <div><em>Click to Filter & View NDVI Zones</em></div>
+        <h3>Field Risk Map <span class="map-legend" id="map-legend"></span></h3>
         <div class="map-container" id="field-map"></div>
       </div>
     </div>
@@ -1105,7 +1247,7 @@ __D3_MIN_JS__
 <script>
 // ===== CONFIG =====
 const CROP_CONFIG = __CROP_CONFIG_JSON__;
-const CONFIG = CROP_CONFIG.corn;
+const CONFIG = CROP_CONFIG.__CROP_TYPE__;
 const THRESHOLD_LABELS = __THRESHOLD_LABELS_JSON__;
 const ZONE_COLORS = { low: "#C96A2B", medium: "#E3C04A", high: "#4E9A6A" };
 const ZONE_LABELS = { low: "Low NDVI", medium: "Medium NDVI", high: "High NDVI" };
@@ -1113,6 +1255,43 @@ const ZONE_LABELS = { low: "Low NDVI", medium: "Medium NDVI", high: "High NDVI" 
 const SEASON_TIER_LABELS = { critical: "High Stress", watch: "Moderate Stress", healthy: "Strong Season" };
 const ALL_FIELDS = __FIELDS_JSON__;
 const WEATHER_SERIES = __WEATHER_SERIES_JSON__;
+
+// ===== GEOMETRY NORMALIZATION =====
+// CDL-derived boundaries are wound counterclockwise per RFC 7946, but the bundled
+// d3 build (geoMercator + geoPath only) renders CCW rings as the globe-covering
+// complement, collapsing every field to the same full-viewport square. Re-orient
+// exterior rings to CW (negative shoelace) and holes to CCW so d3 draws the small
+// polygon interior. Uses a translated shoelace to avoid float cancellation on tiny
+// (~1 acre) parcels.
+function normalizeFieldGeometry(geom) {
+  if (!geom) return geom;
+  function ringArea(ring) {
+    var n = ring.length - 1;
+    if (n < 3) return 0;
+    var cx = 0, cy = 0;
+    for (var i = 0; i < n; i++) { cx += ring[i][0]; cy += ring[i][1]; }
+    cx /= n; cy /= n;
+    var a = 0;
+    for (var i = 0; i < n; i++) {
+      var p = ring[i], q = ring[(i + 1) % n];
+      a += (p[0] - cx) * (q[1] - cy) - (q[0] - cx) * (p[1] - cy);
+    }
+    return a;
+  }
+  function fixRing(ring, wantCCW) {
+    var isCCW = ringArea(ring) > 0;
+    return (isCCW !== wantCCW) ? ring.slice().reverse() : ring;
+  }
+  function fixPolygon(coordinates) {
+    return coordinates.map(function(ring, idx) { return fixRing(ring, idx > 0); });
+  }
+  if (geom.type === 'Polygon') return { type: 'Polygon', coordinates: fixPolygon(geom.coordinates) };
+  if (geom.type === 'MultiPolygon') return { type: 'MultiPolygon', coordinates: geom.coordinates.map(fixPolygon) };
+  return geom;
+}
+ALL_FIELDS.forEach(function(f) {
+  if (f.geometry && f.geometry.geometry) f.geometry.geometry = normalizeFieldGeometry(f.geometry.geometry);
+});
 
 // ===== ICONS =====
 const ICONS = {
@@ -1143,22 +1322,28 @@ const ICONS = {
  */
 function phaseAndStageFromGDD(cumGDD, config) {
   var stages = config.growth_stages || {};
-  var VE_GDD = stages.VE  || 120;
-  var R1_GDD = stages.R1  || 1400;
-  var R4_GDD = stages.R4  || 2150;
+  var anchors = config.phase_anchors || {};
+  var descriptions = config.stage_descriptions || {};
+  function anchorGDD(key, fallbackName, fallbackGDD) {
+    var name = anchors[key] || fallbackName;
+    return stages[name] != null ? stages[name] : (stages[fallbackName] != null ? stages[fallbackName] : fallbackGDD);
+  }
+  var VE_GDD = anchorGDD('establishing_end', 'VE', 120);
+  var R1_GDD = anchorGDD('building_end', 'R1', 1400);
+  var R4_GDD = anchorGDD('reproductive_early_end', 'R4', 2150);
 
-  var orderedStages = [
-    ['VE', stages.VE || 120],  ['V6', stages.V6 || 500],
-    ['VT', stages.VT || 1130], ['R1', stages.R1 || 1400],
-    ['R2', stages.R2 || 1650], ['R3', stages.R3 || 1880],
-    ['R4', stages.R4 || 2150], ['R5', stages.R5 || 2450],
-    ['R6', stages.R6 || 2700],
-  ];
-  var stageDescMap = {
+  var orderedStages = Object.keys(stages).length
+    ? Object.keys(stages).map(function(k) { return [k, stages[k]]; }).sort(function(a, b) { return a[1] - b[1]; })
+    : [
+        ['VE', 120], ['V6', 500], ['VT', 1130], ['R1', 1400],
+        ['R2', 1650], ['R3', 1880], ['R4', 2150], ['R5', 2450], ['R6', 2700],
+      ];
+  var defaultDescMap = {
     VE: 'Early Vegetative', V6: 'Vegetative', VT: 'Tasseling',
     R1: 'Silking', R2: 'Blister', R3: 'Milk',
     R4: 'Dough',  R5: 'Dent',    R6: 'Maturing',
   };
+  var stageDescMap = Object.assign({}, defaultDescMap, descriptions);
 
   // --- Determine phase ---
   var phase;
@@ -1168,13 +1353,15 @@ function phaseAndStageFromGDD(cumGDD, config) {
   else                        phase = 'reproductive_late';
 
   // --- Stage label: adjacent bracket ---
-  var stageLabel = 'Planting\u2013VE';
-  var stageDescription = 'Emergence';
+  var firstName = orderedStages[0][0];
+  var lastName = orderedStages[orderedStages.length - 1][0];
+  var stageLabel = 'Planting\u2013' + firstName;
+  var stageDescription = stageDescMap[firstName] || 'Emergence';
   for (var k = 0; k < orderedStages.length; k++) {
     if (cumGDD < orderedStages[k][1]) {
       if (k === 0) {
         stageLabel = 'Planting\u2013' + orderedStages[0][0];
-        stageDescription = 'Emergence';
+        stageDescription = stageDescMap[orderedStages[0][0]] || 'Emergence';
       } else {
         var prevName = orderedStages[k - 1][0];
         var curName  = orderedStages[k][0];
@@ -1184,8 +1371,8 @@ function phaseAndStageFromGDD(cumGDD, config) {
       break;
     }
     if (k === orderedStages.length - 1) {
-      stageLabel = 'R6+';
-      stageDescription = 'Maturing';
+      stageLabel = lastName + '+';
+      stageDescription = stageDescMap[lastName] || 'Maturing';
     }
   }
 
@@ -1271,11 +1458,14 @@ function computeCurrentGDDFromWeather(weatherData, displayYear, config) {
  */
 function healthyThresholdForStage(accumulatedGDD, config) {
   var stages = config.growth_stages;
+  var anchors = config.phase_anchors || {};
+  var fullCanopy = anchors.full_canopy || 'VT';
+  var fullGDD = stages[fullCanopy] != null ? stages[fullCanopy] : (stages.VT != null ? stages.VT : 1130);
   var fullThreshold = config.watch_threshold;
-  if (accumulatedGDD >= stages.VT) {
+  if (accumulatedGDD >= fullGDD) {
     return fullThreshold;
   }
-  var progress = accumulatedGDD / stages.VT;
+  var progress = fullGDD > 0 ? accumulatedGDD / fullGDD : 1;
   return fullThreshold * Math.max(progress, 0.3);
 }
 
@@ -1471,6 +1661,13 @@ const FIELD_LINE_COLORS = [
 function computeStressDuration(ndviSeries, config, dailyGDDLookup) {
   if (!ndviSeries || ndviSeries.length < 2) return 0;
   var stages = config.growth_stages;
+  var anchors = config.phase_anchors || {};
+  function anchorGDD(key, fallbackName, fallbackGDD) {
+    var name = anchors[key] || fallbackName;
+    return stages[name] != null ? stages[name] : (stages[fallbackName] != null ? stages[fallbackName] : fallbackGDD);
+  }
+  var VE_GDD = anchorGDD('establishing_end', 'VE', 120);
+  var R4_GDD = anchorGDD('reproductive_early_end', 'R4', 2150);
   var total = 0, inStress = false, start = null;
   dailyGDDLookup = dailyGDDLookup || {};
 
@@ -1478,12 +1675,12 @@ function computeStressDuration(ndviSeries, config, dailyGDDLookup) {
     return Math.round((new Date(b) - new Date(a)) / 86400000);
   }
 
-  // Phase gating mirrors classifyRisk(): establishing and reproductive_late (R4+)
+  // Phase gating mirrors classifyRisk(): establishing and reproductive_late
   // are not diagnostic, so they neither start nor accumulate stress days.
   function phaseForGDD(gdd) {
     if (gdd == null) return 'building'; // fallback if a date has no matching weather
-    if (gdd < stages.VE) return 'establishing';
-    if (gdd < stages.R4) return 'active'; // building or reproductive_early — both counted
+    if (gdd < VE_GDD) return 'establishing';
+    if (gdd < R4_GDD) return 'active'; // building or reproductive_early — both counted
     return 'reproductive_late';
   }
 
@@ -1516,25 +1713,28 @@ function computeStressDuration(ndviSeries, config, dailyGDDLookup) {
 function computeDateStageMap(weatherData, config) {
   if (!weatherData || !weatherData.dates || !weatherData.dates.length) return null;
   var stages = config.growth_stages || {};
+  var descriptions = config.stage_descriptions || {};
   var gddBaseF = config.gdd_base_temp_f || 50.0;
-  var orderedStages = [
-    ['VE', stages.VE || 120],  ['V6', stages.V6 || 500],
-    ['VT', stages.VT || 1130], ['R1', stages.R1 || 1400],
-    ['R2', stages.R2 || 1650], ['R3', stages.R3 || 1880],
-    ['R4', stages.R4 || 2150], ['R5', stages.R5 || 2450],
-    ['R6', stages.R6 || 2700],
-  ];
-  var stageDescMap = {
+  var orderedStages = Object.keys(stages).length
+    ? Object.keys(stages).map(function(k) { return [k, stages[k]]; }).sort(function(a, b) { return a[1] - b[1]; })
+    : [
+        ['VE', 120], ['V6', 500], ['VT', 1130], ['R1', 1400],
+        ['R2', 1650], ['R3', 1880], ['R4', 2150], ['R5', 2450], ['R6', 2700],
+      ];
+  var defaultDescMap = {
     VE: 'Early Vegetative', V6: 'Vegetative', VT: 'Tasseling',
     R1: 'Silking', R2: 'Blister', R3: 'Milk',
     R4: 'Dough',  R5: 'Dent',    R6: 'Maturing',
   };
+  var stageDescMap = Object.assign({}, defaultDescMap, descriptions);
   var displayYear = weatherData.dates[0].slice(0, 4);
   var plantingDate = getPlantingDate(weatherData, displayYear);
   if (!plantingDate) return null;
 
   var dateStageMap = [];
   var cumGDD = 0;
+  var firstName = orderedStages[0][0];
+  var lastName = orderedStages[orderedStages.length - 1][0];
   for (var j = 0; j < weatherData.dates.length; j++) {
     var dj = new Date(weatherData.dates[j]);
     if (dj < plantingDate) continue;
@@ -1545,7 +1745,7 @@ function computeDateStageMap(weatherData, config) {
     }
     cumGDD = Math.round(cumGDD * 10) / 10;
 
-    var stageLabel = 'Pre-VE', stageDescription = 'Emergence';
+    var stageLabel = 'Pre-' + firstName, stageDescription = stageDescMap[firstName] || 'Emergence';
     for (var k = 0; k < orderedStages.length; k++) {
       if (cumGDD < orderedStages[k][1]) {
         if (k > 0) {
@@ -1555,8 +1755,8 @@ function computeDateStageMap(weatherData, config) {
         break;
       }
       if (k === orderedStages.length - 1) {
-        stageLabel = 'R6+';
-        stageDescription = 'Maturing';
+        stageLabel = lastName + '+';
+        stageDescription = stageDescMap[lastName] || 'Maturing';
       }
     }
     dateStageMap.push({ date: weatherData.dates[j], stageLabel: stageLabel, stageDescription: stageDescription });
@@ -1641,12 +1841,18 @@ function detectNotableEvent(ndviSeries, weatherData, config, dateStageMap) {
       var dropEnd = ndviSeries[i].date;
       var dryDays = countConsecutiveDryDays(weatherData, dropStart, dropEnd, significantMm);
 
-      // Stage-sensitive threshold: VT-R2 is the most drought-sensitive window
+      // Stage-sensitive threshold: the most drought-sensitive window
       var useThreshold = 14;
+      var sensitiveStages = config.sensitive_stages || ['VT', 'R1', 'R2'];
       if (stageMapEntry) {
         var stageLabel = getStageLabelForDates(stageMapEntry, dropStart, dropEnd);
-        if (stageLabel && (stageLabel.indexOf('VT') !== -1 || stageLabel.indexOf('R1') !== -1 || stageLabel.indexOf('R2') !== -1)) {
-          useThreshold = 10;
+        if (stageLabel) {
+          for (var s = 0; s < sensitiveStages.length; s++) {
+            if (stageLabel.indexOf(sensitiveStages[s]) !== -1) {
+              useThreshold = 10;
+              break;
+            }
+          }
         }
       }
 
@@ -1655,10 +1861,9 @@ function detectNotableEvent(ndviSeries, weatherData, config, dateStageMap) {
         if (stageMapEntry) {
           var sl = getStageLabelForDates(stageMapEntry, dropStart, dropEnd);
           if (sl) {
-            var stageDescMap = { 'Early Vegetative': 'emergence', 'Vegetative': 'vegetative growth', 'Tasseling': 'tasseling', 'Silking': 'pollination', 'Blister': 'grain fill', 'Milk': 'grain fill', 'Dough': 'grain fill', 'Dent': 'grain fill', 'Maturing': 'maturation' };
             for (var si = 0; si < stageMapEntry.length; si++) {
               if (stageMapEntry[si].stageLabel === sl) {
-                stageText = ' during ' + sl + ' (' + (stageDescMap[stageMapEntry[si].stageDescription] || stageMapEntry[si].stageDescription.toLowerCase()) + ')';
+                stageText = ' during ' + sl + ' (' + stageMapEntry[si].stageDescription.toLowerCase() + ')';
                 break;
               }
             }
@@ -1683,11 +1888,12 @@ function detectNotableEvent(ndviSeries, weatherData, config, dateStageMap) {
 }
 
 // ===== STATE (pub/sub) =====
-function isFieldCorn(field, year) {
+function isFieldCrop(field, year) {
+  if (CONFIG.match_all) return true;
   var crop = field.cdl_crops && field.cdl_crops[year] && field.cdl_crops[year] !== 'Unknown'
     ? field.cdl_crops[year]
     : field.current_crop;
-  return crop === 'Corn';
+  return crop === CONFIG.crop_name;
 }
 
 const state = {
@@ -1720,7 +1926,7 @@ const state = {
   getFilteredFields() {
     var ff = this.fields;
     var year = this.filters.selectedYear;
-    ff = ff.filter(function(f) { return isFieldCorn(f, year); });
+    ff = ff.filter(function(f) { return isFieldCrop(f, year); });
     if (this.filters.fieldIds.length > 0) {
       ff = ff.filter(function(f) { return this.filters.fieldIds.includes(f.id); }.bind(this));
     }
@@ -1780,8 +1986,8 @@ function syncFilters() {
   var year = state.filters.selectedYear;
   var selectedId = state.filters.fieldIds.length === 1 ? state.filters.fieldIds[0] : null;
 
-  var cornFields = ALL_FIELDS.filter(function(f) { return isFieldCorn(f, year); });
-  var validIds = cornFields.map(function(f) { return f.id; });
+  var cropFields = ALL_FIELDS.filter(function(f) { return isFieldCrop(f, year); });
+  var validIds = cropFields.map(function(f) { return f.id; });
   if (selectedId && !validIds.includes(selectedId)) {
     state.filters.fieldIds = [];
     selectedId = null;
@@ -1802,10 +2008,10 @@ function syncFilters() {
   indicator.classList.toggle("has-filter", !!selectedId);
   indicator.classList.toggle("no-filter", !selectedId);
   if (selectedId) {
-    var f = cornFields.find(function(fi) { return fi.id === selectedId; });
+    var f = cropFields.find(function(fi) { return fi.id === selectedId; });
     indicator.innerHTML = (f ? f.name : 'Field') + ' <span class="clear-field-filter" title="Clear field filter">\u2715</span>';
   } else {
-    indicator.textContent = 'All Corn Fields';
+    indicator.textContent = 'All Fields';
   }
 
   state.publish();
@@ -1848,7 +2054,7 @@ function renderKPIs() {
   var aggPhase = aggregatePhaseInfo(ff);
   var currentPhase = aggPhase.phase;
   var stageLabel   = aggPhase.stageLabel;
-  var stageDesc    = aggPhase.stageDescription;
+  var phaseDescs    = CONFIG.phase_descriptions || {};
 
   // NDVI tier: also gate by phase — in establishing/reproductive_late the avg NDVI
   // number is not diagnostic, so don't colour-code the KPI card by it.
@@ -1888,7 +2094,7 @@ function renderKPIs() {
       '<div class="kpi-card headline ' + riskClass + '">' +
         '<div class="kpi-label">' + ICONS.warning + ' Fields Requiring Attention</div>' +
         '<div class="kpi-value">' + attention + ' / ' + total + ' <span class="kpi-unit">' + critical + ' critical &middot; ' + watch + ' watch</span></div>' +
-        (stageLabel && stageDesc ? '<div class="kpi-trend">Growth Stage: ' + stageLabel + ' &middot; ' + stageDesc + '</div>' : '<div class="kpi-trend"></div>') +
+        (stageLabel && phaseDescs[currentPhase] ? '<div class="kpi-trend">' + phaseDescs[currentPhase] + ' &middot; ' + stageLabel + '</div>' : '<div class="kpi-trend"></div>') +
       '</div>' +
       '<div class="kpi-card ' + ndviTier + '">' +
         '<div class="kpi-label">' + ICONS.plant + ' Average NDVI</div>' +
@@ -1962,22 +2168,23 @@ function renderNDVITimeSeries() {
   var aggPhase = aggregatePhaseInfo(ff);
   var currentPhase = aggPhase.phase;
   var stageLabel   = aggPhase.stageLabel;
+  var phaseDescs = CONFIG.phase_descriptions || {};
   var ndviLegendSpan = '<span class="map-legend" id="ndvi-legend"></span>';
   var chartTitle;
   var isCurrent = state.filters.selectedYear === String(new Date().getFullYear());
   if (!isCurrent) {
     chartTitle = 'NDVI Trajectory \u2014 ' + state.filters.selectedYear + ' Season' + ndviLegendSpan;
   } else if (currentPhase === 'establishing') {
-    chartTitle = 'NDVI &middot; Emergence Phase (pre-canopy, flagging suppressed)' + ndviLegendSpan;
+    chartTitle = 'NDVI &middot; ' + (phaseDescs['establishing'] || 'Pre-Canopy (flagging suppressed)') + ndviLegendSpan;
   } else if (currentPhase === 'building') {
     var decliningCount = ff.filter(function(f) { return f.ndvi_trend === 'declining'; }).length;
-    chartTitle = 'NDVI Declining in ' + decliningCount + ' ' + (decliningCount === 1 ? 'Field' : 'Fields') + ndviLegendSpan;
+    chartTitle = (phaseDescs['building'] || 'NDVI Declining') + ' in ' + decliningCount + ' ' + (decliningCount === 1 ? 'Field' : 'Fields') + ndviLegendSpan;
   } else if (currentPhase === 'reproductive_early') {
     var belowFloor = ff.filter(function(f) { return f.current_risk === 'critical' || f.current_risk === 'watch'; }).length;
-    chartTitle = 'NDVI &middot; Early Grain Fill (' + (stageLabel || 'R1\u2013R4') + ') &middot; ' + belowFloor + ' field' + (belowFloor !== 1 ? 's' : '') + ' below threshold' + ndviLegendSpan;
+    chartTitle = 'NDVI &middot; ' + (phaseDescs['reproductive_early'] || 'Ripening') + ' (' + (stageLabel || '') + ') &middot; ' + belowFloor + ' field' + (belowFloor !== 1 ? 's' : '') + ' below threshold' + ndviLegendSpan;
   } else {
     // reproductive_late
-    chartTitle = 'NDVI &middot; Natural Senescence (' + (stageLabel || 'R4+') + ', flagging suppressed)' + ndviLegendSpan;
+    chartTitle = 'NDVI &middot; ' + (phaseDescs['reproductive_late'] || 'Late Season (flagging suppressed)') + ' (' + (stageLabel || '') + ')' + ndviLegendSpan;
   }
   d3.select("#ndvi-declining-title").html(chartTitle);
 
@@ -2026,7 +2233,7 @@ function renderNDVITimeSeries() {
 
 
   // Growth stage annotations (vertical lines from cumulative GDD)
-  var stageColors = {"VE":"#4CAF50","V6":"#8BC34A","VT":"#FFC107","R1":"#FF9800","R2":"#FF5722","R3":"#795548","R4":"#9C27B0","R5":"#3F51B5","R6":"#607D8B"};
+  var stageColors = Object.assign({"VE":"#4CAF50","V6":"#8BC34A","VT":"#FFC107","R1":"#FF9800","R2":"#FF5722","R3":"#795548","R4":"#9C27B0","R5":"#3F51B5","R6":"#607D8B"}, CONFIG.stage_colors || {});
   var gddBaseF = CONFIG.gdd_base_temp_f;
   var displayYear = state.filters.selectedYear;
   var chartStart = xScale.domain()[0], chartEnd = xScale.domain()[1];
@@ -2091,11 +2298,29 @@ function renderNDVITimeSeries() {
         .attr("fill", "#fff").attr("opacity", 0.8).attr("rx", 2);
     }
 
+    // Weather gap (drawn before stage annotations for correct z-order)
+    var wgapNdvi = getWeatherGap(dailyData, chartStart, chartEnd);
+    if (wgapNdvi) {
+      var ngx1 = xScale(wgapNdvi.start), ngx2 = xScale(wgapNdvi.end);
+      svg.append("rect")
+        .attr("x", ngx1).attr("y", 0)
+        .attr("width", ngx2 - ngx1).attr("height", height)
+        .attr("fill", "#888").attr("opacity", 0.12)
+        .attr("pointer-events", "none");
+      svg.append("text")
+        .attr("x", (ngx1 + ngx2) / 2).attr("y", height - 8).attr("va", "bottom")
+        .attr("text-anchor", "middle").attr("font-size", "8px")
+        .attr("font-weight", "600").attr("fill", "#888")
+        .text("Weather gap");
+    }
+
     // Stage annotations
     var stages = CONFIG.growth_stages || {};
     var stageKeys = Object.keys(stages);
+    var placedStages = [];
     stageKeys.forEach(function(stage) {
       var threshold = stages[stage];
+      var crossed = false;
       for (var i = 0; i < cumGDDArr.length; i++) {
         if (cumGDDArr[i] >= threshold) {
           var evDate = new Date(dailyData.dates[i]);
@@ -2107,9 +2332,16 @@ function renderNDVITimeSeries() {
               .attr("y1", 0).attr("y2", height)
               .attr("stroke", c).attr("stroke-width", 0.8)
               .attr("stroke-dasharray", "3,3").attr("opacity", 0.45);
+            var lvl = 0;
+            for (var ps = 0; ps < placedStages.length; ps++) {
+              if (Math.abs(xPos - placedStages[ps]) <= 40) {
+                lvl = Math.max(lvl, ps + 1);
+              }
+            }
+            placedStages.push(xPos);
             var labelG = svg.append("g").attr("transform", "translate(" + xPos + ",0)");
             var txt = labelG.append("text")
-              .attr("x", 0).attr("y", 10)
+              .attr("x", 0).attr("y", 10 + lvl * 12)
               .attr("text-anchor", "middle").attr("font-size", "8px")
               .attr("font-weight", "600").attr("fill", c)
               .text(stage);
@@ -2120,7 +2352,43 @@ function renderNDVITimeSeries() {
               .attr("fill", "#fff").attr("opacity", 0.8)
               .attr("rx", 2);
           }
+          crossed = true;
           break;
+        }
+      }
+      // Projected stage: not yet crossed, use historical avg DOY if available
+      if (!crossed) {
+        var avgDoyNdvi = weatherField && weatherField.weather_summary && weatherField.weather_summary.stage_avg_doy;
+        if (avgDoyNdvi && avgDoyNdvi[stage]) {
+          var projDateNdvi = new Date(year, 0, avgDoyNdvi[stage]);
+          if (projDateNdvi >= chartStart && projDateNdvi <= chartEnd) {
+            var xPos = xScale(projDateNdvi);
+            var c = stageColors[stage] || "#666";
+            svg.append("line")
+              .attr("x1", xPos).attr("x2", xPos)
+              .attr("y1", 0).attr("y2", height)
+              .attr("stroke", c).attr("stroke-width", 0.8)
+              .attr("stroke-dasharray", "5,3").attr("opacity", 0.4);
+            var lvl = 0;
+            for (var ps = 0; ps < placedStages.length; ps++) {
+              if (Math.abs(xPos - placedStages[ps]) <= 40) {
+                lvl = Math.max(lvl, ps + 1);
+              }
+            }
+            placedStages.push(xPos);
+            var labelG = svg.append("g").attr("transform", "translate(" + xPos + ",0)");
+            var txt = labelG.append("text")
+              .attr("x", 0).attr("y", 10 + lvl * 12)
+              .attr("text-anchor", "middle").attr("font-size", "8px")
+              .attr("font-weight", "600").attr("fill", c)
+              .text(stage + " (proj)");
+            var bbox = txt.node().getBBox();
+            labelG.insert("rect", "text")
+              .attr("x", bbox.x - 2).attr("y", bbox.y - 1)
+              .attr("width", bbox.width + 4).attr("height", bbox.height + 2)
+              .attr("fill", "#fff").attr("opacity", 0.8)
+              .attr("rx", 2);
+          }
         }
       }
     });
@@ -2156,21 +2424,6 @@ function renderNDVITimeSeries() {
             .text("Watch");
       }
     }
-  }
-
-  var wgap = getWeatherGap(dailyData, chartStart, chartEnd);
-  if (wgap) {
-    var gx1 = xScale(wgap.start), gx2 = xScale(wgap.end);
-    svg.append("rect")
-      .attr("x", gx1).attr("y", 0)
-      .attr("width", gx2 - gx1).attr("height", height)
-      .attr("fill", "#888").attr("opacity", 0.12)
-      .attr("pointer-events", "none");
-    svg.append("text")
-      .attr("x", (gx1 + gx2) / 2).attr("y", 10)
-      .attr("text-anchor", "middle").attr("font-size", "8px")
-      .attr("font-weight", "600").attr("fill", "#888")
-      .text("Weather gap");
   }
 
   svg.append("g").attr("class", "axis").call(d3.axisLeft(yScale).ticks(6));
@@ -2458,7 +2711,7 @@ function renderNDVIvsAWC() {
 function fieldHasRenderedZones(fieldId) {
   var year = state.filters.selectedYear;
   var f = ALL_FIELDS.find(function(fi) { return fi.id === fieldId; });
-  return !!(f && isFieldCorn(f, year) && f.zones && f.zones[year] && f.zones[year].length);
+  return !!(f && isFieldCrop(f, year) && f.zones && f.zones[year] && f.zones[year].length);
 }
 
 function renderMapLegend() {
@@ -2496,8 +2749,8 @@ function renderMap() {
   var selectedIds = state.filters.fieldIds;
   var isCurrent = year === String(new Date().getFullYear());
 
-  var allCornFields = ALL_FIELDS.filter(function(f) { return isFieldCorn(f, year) && f.geometry?.geometry; });
-  if (!allCornFields.length) return;
+  var allCropFields = ALL_FIELDS.filter(function(f) { return isFieldCrop(f, year) && f.geometry?.geometry; });
+  if (!allCropFields.length) return;
 
   // Use dynamically-computed field data (risk, NDVI) for the selected year
   var filteredFields = state.getFilteredFields();
@@ -2505,9 +2758,9 @@ function renderMap() {
   filteredFields.forEach(function(ff) { ffMap[ff.id] = ff; });
 
   var visibleFields = selectedIds.length > 0
-    ? allCornFields.filter(function(f) { return selectedIds.includes(f.id); })
-    : allCornFields;
-  if (!visibleFields.length) visibleFields = allCornFields;
+    ? allCropFields.filter(function(f) { return selectedIds.includes(f.id); })
+    : allCropFields;
+  if (!visibleFields.length) visibleFields = allCropFields;
 
   var rect = container.node().getBoundingClientRect();
   var width = rect.width, height = rect.height;
@@ -2520,9 +2773,9 @@ function renderMap() {
   // Projection source follows the filter: single selected field zooms to its boundary,
   // otherwise the full grower view. Defensive fallback keeps fitExtent non-empty.
   var geoSource = selectedIds.length === 1
-    ? allCornFields.filter(function(f) { return f.id === selectedIds[0]; })
-    : allCornFields;
-  if (!geoSource.length) geoSource = allCornFields;
+    ? allCropFields.filter(function(f) { return f.id === selectedIds[0]; })
+    : allCropFields;
+  if (!geoSource.length) geoSource = allCropFields;
 
   var geoCollection = {
     type: "FeatureCollection",
@@ -2540,7 +2793,7 @@ function renderMap() {
   // Marker radius scales with field area (sqrt: visual area ∝ acres), clamped.
   var minR = 5, maxR = 22;
   var aMin = Infinity, aMax = -Infinity;
-  allCornFields.forEach(function(f) {
+  allCropFields.forEach(function(f) {
     var a = f.area_acres;
     if (a < aMin) aMin = a;
     if (a > aMax) aMax = a;
@@ -2554,7 +2807,7 @@ function renderMap() {
   // Zone polygons replace the risk fill only when zoomed to a single field with zones
 
   // Draw fields — use markers for tiny polygons, true polygons otherwise
-  allCornFields.forEach(function(f) {
+  allCropFields.forEach(function(f) {
     var visible = selectedIds.length === 0 || selectedIds.includes(f.id);
     var dynamic = ffMap[f.id];
     var field = dynamic || f;
@@ -2589,8 +2842,9 @@ function renderMap() {
       // Zone fills render beneath the boundary path so the risk-tier stroke stays on top
       if (hasZones) {
         fieldZones.forEach(function(z) {
+          var zoneGeom = z.geometry && z.geometry.type ? normalizeFieldGeometry(z.geometry) : z.geometry;
           var zp = mapGroup.append("path")
-            .datum(z.geometry)
+            .datum(zoneGeom)
             .attr("d", geoPath)
             .attr("fill", ZONE_COLORS[z.label] || "#999")
             .attr("stroke", "#fff")
@@ -2706,7 +2960,7 @@ function renderGDD() {
   const repField = representativeField(ff);
   const normalGDD = (repField && repField.weather_summary?.gdd_normal) || 1500;
   const maxGDD = Math.max(targetGDD, normalGDD, ...fieldData.map(f => f.current.length ? f.current[f.current.length - 1].gdd : 0));
-  const maxY = Math.ceil(maxGDD / 500) * 500;
+  const maxY = Math.ceil(Math.max(normalGDD, maxGDD) * 1.17 / 500) * 500;
 
   const year = state.filters.selectedYear;
   const xDomain = getChartDateExtent(ff, year);
@@ -2730,6 +2984,15 @@ function renderGDD() {
     .attr("x", width).attr("y", yScale(targetGDD) - 4)
     .attr("text-anchor", "end").attr("font-size", "10px").attr("fill", "#e67e22")
     .text("Target: " + targetGDD + " \u00b0F-days (maturity)");
+
+  svg.append("line")
+    .attr("x1", 0).attr("x2", width)
+    .attr("y1", yScale(normalGDD)).attr("y2", yScale(normalGDD))
+    .attr("stroke", "#4a148c").attr("stroke-dasharray", "4,3").attr("stroke-width", 1).attr("opacity", 0.5);
+  svg.append("text")
+    .attr("x", width).attr("y", yScale(normalGDD) - 4)
+    .attr("text-anchor", "end").attr("font-size", "10px").attr("fill", "#4a148c").attr("opacity", 0.8)
+    .text("Avg annual " + normalGDD + " GDD");
 
   var gddColorScale = d3.scaleOrdinal(FIELD_LINE_COLORS).domain(ff.map(f => f.id));
   const line = d3.line()
@@ -2795,8 +3058,8 @@ function renderGDD() {
 
   // Growth stage annotations — identical to NDVI chart: dashed verticals at the
   // calendar date each stage threshold (base-50°F GDD from planting) was crossed.
-  var stageColors = {"VE":"#4CAF50","V6":"#8BC34A","VT":"#FFC107","R1":"#FF9800",
-                     "R2":"#FF5722","R3":"#795548","R4":"#9C27B0","R5":"#3F51B5","R6":"#607D8B"};
+  var stageColors = Object.assign({"VE":"#4CAF50","V6":"#8BC34A","VT":"#FFC107","R1":"#FF9800",
+                     "R2":"#FF5722","R3":"#795548","R4":"#9C27B0","R5":"#3F51B5","R6":"#607D8B"}, CONFIG.stage_colors || {});
   var gddBaseF    = CONFIG.gdd_base_temp_f;
   var displayYear = state.filters.selectedYear;
   var chartStart  = xScale.domain()[0], chartEnd = xScale.domain()[1];
@@ -2844,11 +3107,29 @@ function renderGDD() {
         .attr("fill", "#fff").attr("opacity", 0.8).attr("rx", 2);
     }
 
+    // Weather gap (drawn before stage annotations for correct z-order)
+    var wgapGdd = getWeatherGap(dailyData, chartStart, chartEnd);
+    if (wgapGdd) {
+      var ggx1 = xScale(wgapGdd.start), ggx2 = xScale(wgapGdd.end);
+      svg.append("rect")
+        .attr("x", ggx1).attr("y", 0)
+        .attr("width", ggx2 - ggx1).attr("height", height)
+        .attr("fill", "#888").attr("opacity", 0.12)
+        .attr("pointer-events", "none");
+      svg.append("text")
+        .attr("x", (ggx1 + ggx2) / 2).attr("y", height - 8).attr("va", "bottom")
+        .attr("text-anchor", "middle").attr("font-size", "8px")
+        .attr("font-weight", "600").attr("fill", "#888")
+        .text("Weather gap");
+    }
+
     // Stage annotations
     var stages    = CONFIG.growth_stages || {};
     var stageKeys = Object.keys(stages);
+    var placedStages = [];
     stageKeys.forEach(function(stage) {
       var threshold = stages[stage];
+      var crossed = false;
       for (var i = 0; i < cumGDDArr.length; i++) {
         if (cumGDDArr[i] >= threshold) {
           var evDate = new Date(dailyData.dates[i]);
@@ -2859,9 +3140,16 @@ function renderGDD() {
               .attr("x1", xPos).attr("x2", xPos).attr("y1", 0).attr("y2", height)
               .attr("stroke", c).attr("stroke-width", 0.8)
               .attr("stroke-dasharray", "3,3").attr("opacity", 0.45);
+            var lvl = 0;
+            for (var ps = 0; ps < placedStages.length; ps++) {
+              if (Math.abs(xPos - placedStages[ps]) <= 40) {
+                lvl = Math.max(lvl, ps + 1);
+              }
+            }
+            placedStages.push(xPos);
             var labelG = svg.append("g").attr("transform", "translate(" + xPos + ",0)");
             var txt = labelG.append("text")
-              .attr("x", 0).attr("y", 10).attr("text-anchor", "middle")
+              .attr("x", 0).attr("y", 10 + lvl * 12).attr("text-anchor", "middle")
               .attr("font-size", "8px").attr("font-weight", "600").attr("fill", c)
               .text(stage);
             var bbox = txt.node().getBBox();
@@ -2870,25 +3158,43 @@ function renderGDD() {
               .attr("width", bbox.width + 4).attr("height", bbox.height + 2)
               .attr("fill", "#fff").attr("opacity", 0.8).attr("rx", 2);
           }
+          crossed = true;
           break;
         }
       }
+      // Projected stage: not yet crossed, use historical avg DOY if available
+      if (!crossed) {
+        var avgDoy = repField && repField.weather_summary && repField.weather_summary.stage_avg_doy;
+        if (avgDoy && avgDoy[stage]) {
+          var projDate = new Date(year, 0, avgDoy[stage]);
+          if (projDate >= chartStart && projDate <= chartEnd) {
+            var xPos = xScale(projDate);
+            var c = stageColors[stage] || "#666";
+            svg.append("line")
+              .attr("x1", xPos).attr("x2", xPos).attr("y1", 0).attr("y2", height)
+              .attr("stroke", c).attr("stroke-width", 0.8)
+              .attr("stroke-dasharray", "5,3").attr("opacity", 0.4);
+            var lvl = 0;
+            for (var ps = 0; ps < placedStages.length; ps++) {
+              if (Math.abs(xPos - placedStages[ps]) <= 40) {
+                lvl = Math.max(lvl, ps + 1);
+              }
+            }
+            placedStages.push(xPos);
+            var labelG = svg.append("g").attr("transform", "translate(" + xPos + ",0)");
+            var txt = labelG.append("text")
+              .attr("x", 0).attr("y", 10 + lvl * 12).attr("text-anchor", "middle")
+              .attr("font-size", "8px").attr("font-weight", "600").attr("fill", c)
+              .text(stage + " (proj)");
+            var bbox = txt.node().getBBox();
+            labelG.insert("rect", "text")
+              .attr("x", bbox.x - 2).attr("y", bbox.y - 1)
+              .attr("width", bbox.width + 4).attr("height", bbox.height + 2)
+              .attr("fill", "#fff").attr("opacity", 0.8).attr("rx", 2);
+          }
+        }
+      }
     });
-  }
-
-  var wgap = getWeatherGap(dailyData, chartStart, chartEnd);
-  if (wgap) {
-    var gx1 = xScale(wgap.start), gx2 = xScale(wgap.end);
-    svg.append("rect")
-      .attr("x", gx1).attr("y", 0)
-      .attr("width", gx2 - gx1).attr("height", height)
-      .attr("fill", "#888").attr("opacity", 0.12)
-      .attr("pointer-events", "none");
-    svg.append("text")
-      .attr("x", (gx1 + gx2) / 2).attr("y", 10)
-      .attr("text-anchor", "middle").attr("font-size", "8px")
-      .attr("font-weight", "600").attr("fill", "#888")
-      .text("Weather gap");
   }
   }
 }
@@ -3310,7 +3616,7 @@ document.getElementById("field-filter-indicator").addEventListener("click", func
 
 document.getElementById("year-select").addEventListener("change", function() {
   state.filters.selectedYear = this.value;
-  state.filters.fieldIds = []; // always reset to All Corn Fields when year changes
+  state.filters.fieldIds = []; // always reset to All Crop Fields when year changes
   syncFilters();
 });
 
@@ -3325,6 +3631,7 @@ syncFilters();
 def main():
     parser = argparse.ArgumentParser(description="Generate Row Crop Intelligence Dashboard")
     parser.add_argument("--grower", default="il-grower", help="Grower slug (default: il-grower)")
+    parser.add_argument("--crop-type", default=None, choices=sorted(CROP_CONFIG.keys()), help="Crop config to use (default: auto-detect from field CDL data)")
     parser.add_argument("--data-root", default=None, help="Runtime data root (default: $DATA_PIPELINE_DATA_ROOT or /home/coder/my-farm-advisor-runtime)")
     parser.add_argument("--d3-path", default=None, help="Path to local d3.v7.min.js (optional, downloads if not provided)")
     parser.add_argument("--output", default=None, help="Output HTML path (default: auto to runtime dashboards dir)")
@@ -3337,11 +3644,13 @@ def main():
         print(f"Error: Grower path not found: {grower_root}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Reading data for grower: {args.grower}")
-    fields, grower_name, weather_series = extract_all_field_data(grower_root, data_root)
+    crop_type = args.crop_type or detect_crop_type(grower_root)
+
+    print(f"Reading data for grower: {args.grower} (crop: {crop_type})")
+    fields, grower_name, weather_series = extract_all_field_data(grower_root, data_root, crop_type=crop_type)
     print(f"  Found {len(fields)} fields, {len(weather_series)} unique weather series")
 
-    summary = build_summary(fields)
+    summary = build_summary(fields, crop_type=crop_type)
     summary["grower_name"] = grower_name
 
     dashboard_data = {
@@ -3356,7 +3665,7 @@ def main():
     d3_js = download_d3()
 
     print(f"Generating dashboard HTML...")
-    html = build_html(data_json_str, d3_js, weather_series=weather_series)
+    html = build_html(data_json_str, d3_js, weather_series=weather_series, crop_type=crop_type)
 
     # Determine output path
     if args.output:

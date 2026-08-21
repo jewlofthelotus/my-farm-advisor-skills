@@ -19,8 +19,17 @@ CDL_CODES = {
     36: "Forest",
     38: "Grassland",
     43: "Open Water",
+    54: "Tomatoes",
+    55: "Caneberries",
+    56: "Hops",
     61: "Fallow/Idle",
+    62: "Pasture/Grass",
     63: "Other",
+    66: "Cherries",
+    67: "Peaches",
+    68: "Apples",
+    69: "Grapes",
+    71: "Other Tree Crops",
     176: "Grass/Pasture",
 }
 
